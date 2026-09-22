@@ -452,24 +452,25 @@ fn to_key_event(wparam: WPARAM, lparam: LPARAM) -> Option<KeyboardEvent> {
     };
     log::trace!("windows_scan: {linux_scan_code:?}");
     let scan_code = linux_scan_code as u32;
+    let time = kybrdllhookstruct.time;
     match wparam {
         WPARAM(p) if p == WM_KEYDOWN as usize => Some(KeyboardEvent::Key {
-            time: 0,
+            time,
             key: scan_code,
             state: 1,
         }),
         WPARAM(p) if p == WM_KEYUP as usize => Some(KeyboardEvent::Key {
-            time: 0,
+            time,
             key: scan_code,
             state: 0,
         }),
         WPARAM(p) if p == WM_SYSKEYDOWN as usize => Some(KeyboardEvent::Key {
-            time: 0,
+            time,
             key: scan_code,
             state: 1,
         }),
         WPARAM(p) if p == WM_SYSKEYUP as usize => Some(KeyboardEvent::Key {
-            time: 0,
+            time,
             key: scan_code,
             state: 0,
         }),

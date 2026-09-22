@@ -5,6 +5,12 @@ use std::{
 };
 
 use input_event::{Event, KeyboardEvent};
+use std::cell::RefCell;
+
+thread_local! {
+    static KEY_SEQ: RefCell<HashMap<u32, u64>> = RefCell::new(HashMap::new());
+    static PRESS_TIMES: RefCell<HashMap<u32, (u128, u32)>> = RefCell::new(HashMap::new());
+}
 
 pub use self::error::{EmulationCreationError, EmulationError, InputEmulationError};
 
@@ -100,6 +106,21 @@ impl InputEmulation {
     }
 
     pub async fn new(backend: Option<Backend>) -> Result<InputEmulation, EmulationCreationError> {
+        tokio::task::spawn_local(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                let sys_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                PRESS_TIMES.with(|m| {
+                    for (&key, &(press_time, _)) in m.borrow().iter() {
+                        if sys_time_ms.saturating_sub(press_time) > 1000 {
+                            log::debug!("[INSTRUMENT] TIMEOUT: key {} has been PRESSED for {} ms with NO RELEASE!", key, sys_time_ms.saturating_sub(press_time));
+                        }
+                    }
+                });
+            }
+        });
+
         if let Some(backend) = backend {
             let b = Self::with_backend(backend).await;
             if b.is_ok() {
@@ -142,9 +163,37 @@ impl InputEmulation {
         handle: EmulationHandle,
     ) -> Result<(), EmulationError> {
         match event {
-            Event::Keyboard(KeyboardEvent::Key { key, state, .. }) => {
+            Event::Keyboard(KeyboardEvent::Key { time, key, state }) => {
+                let previously_pressed = self.pressed_keys.get(&handle).map(|keys| keys.contains(&key)).unwrap_or(false);
+                let allowed = self.update_pressed_keys(handle, key, state);
+                
+                let sys_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                let seq = KEY_SEQ.with(|m| {
+                    let mut m = m.borrow_mut();
+                    if state == 1 && allowed {
+                        let e = m.entry(key).or_insert(0);
+                        *e += 1;
+                        *e
+                    } else {
+                        *m.get(&key).unwrap_or(&0)
+                    }
+                });
+                
+                if state == 1 && allowed {
+                    PRESS_TIMES.with(|m| m.borrow_mut().insert(key, (sys_time_ms, time)));
+                }
+                let mut duration_msg = String::new();
+                if state == 0 && allowed {
+                    if let Some((recv_press_time, source_press_time)) = PRESS_TIMES.with(|m| m.borrow_mut().remove(&key)) {
+                        let recv_duration = sys_time_ms.saturating_sub(recv_press_time);
+                        let source_duration = time.wrapping_sub(source_press_time);
+                        duration_msg = format!(" (recv_held: {} ms, source_held: {} ms)", recv_duration, source_duration);
+                    }
+                }
+                
+                log::debug!("[INSTRUMENT 2/EMUL] sys_time_ms: {sys_time_ms}, source_time: {time}, key: {key}, seq: {seq}, state: {state} => allowed: {allowed} (was_pressed: {previously_pressed}){duration_msg}");
                 // prevent double pressed / released keys
-                if self.update_pressed_keys(handle, key, state) {
+                if allowed {
                     self.emulation.consume(event, handle).await?;
                 }
                 Ok(())

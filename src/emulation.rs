@@ -160,7 +160,13 @@ impl ListenTask {
                                 self.emulation_proxy.remove(addr);
                                 self.listener.reply(addr, ProtoEvent::Ack(0)).await;
                             }
-                            ProtoEvent::Input(event) => self.emulation_proxy.consume(event, addr),
+                            ProtoEvent::Input(event) => {
+                                if let Event::Keyboard(input_event::KeyboardEvent::Key { time, key, state }) = event {
+                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                                    log::debug!("[INSTRUMENT 1/NET] <- {addr} sys_time_ms: {ts}, source_time: {time}, key: {key}, state: {state}");
+                                }
+                                self.emulation_proxy.consume(event, addr)
+                            },
                             ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong(self.emulation_proxy.emulation_active.get())).await,
                             // Peer's version handshake. Echo our own
                             // commit back so the peer's connect-side
