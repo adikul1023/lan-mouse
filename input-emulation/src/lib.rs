@@ -164,10 +164,23 @@ impl InputEmulation {
     ) -> Result<(), EmulationError> {
         match event {
             Event::Keyboard(KeyboardEvent::Key { time, key, state }) => {
-                let previously_pressed = self.pressed_keys.get(&handle).map(|keys| keys.contains(&key)).unwrap_or(false);
+                let previously_pressed = self.has_pressed_keys(handle);
                 let allowed = self.update_pressed_keys(handle, key, state);
+                thread_local! {
+                    static PRESS_TIMES: std::cell::RefCell<HashMap<u32, (u128, u32)>> = std::cell::RefCell::new(HashMap::new());
+                    static KEY_SEQ: std::cell::RefCell<HashMap<u32, usize>> = std::cell::RefCell::new(HashMap::new());
+                    static LAST_RECV_TIME: std::cell::RefCell<u128> = std::cell::RefCell::new(0);
+                }
                 
                 let sys_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                
+                let inter_packet_gap = LAST_RECV_TIME.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let gap = if *m == 0 { 0 } else { sys_time_ms.saturating_sub(*m) };
+                    *m = sys_time_ms;
+                    gap
+                });
+
                 let seq = KEY_SEQ.with(|m| {
                     let mut m = m.borrow_mut();
                     if state == 1 && allowed {
@@ -181,17 +194,19 @@ impl InputEmulation {
                 
                 if state == 1 && allowed {
                     PRESS_TIMES.with(|m| m.borrow_mut().insert(key, (sys_time_ms, time)));
+                    log::debug!("[INSTRUMENT 3/EMUL] KEYDOWN: key={key}, seq={seq}, source_time={time}, receiver_time={sys_time_ms}, gap={inter_packet_gap}ms");
                 }
-                let mut duration_msg = String::new();
+                
                 if state == 0 && allowed {
                     if let Some((recv_press_time, source_press_time)) = PRESS_TIMES.with(|m| m.borrow_mut().remove(&key)) {
-                        let recv_duration = sys_time_ms.saturating_sub(recv_press_time);
-                        let source_duration = time.wrapping_sub(source_press_time);
-                        duration_msg = format!(" (recv_held: {} ms, source_held: {} ms)", recv_duration, source_duration);
+                        let recv_duration = sys_time_ms.saturating_sub(recv_press_time) as i64;
+                        let source_duration = time.wrapping_sub(source_press_time) as i64;
+                        let receiver_delay = recv_duration - source_duration;
+                        
+                        log::debug!("[INSTRUMENT 3/EMUL] KEYUP: key={key}, seq={seq}, source_time={time}, receiver_time={sys_time_ms}, gap={inter_packet_gap}ms, source_duration={source_duration}ms, receiver_duration={recv_duration}ms, receiver_delay={receiver_delay}ms");
                     }
                 }
                 
-                log::debug!("[INSTRUMENT 2/EMUL] sys_time_ms: {sys_time_ms}, source_time: {time}, key: {key}, seq: {seq}, state: {state} => allowed: {allowed} (was_pressed: {previously_pressed}){duration_msg}");
                 // prevent double pressed / released keys
                 if allowed {
                     self.emulation.consume(event, handle).await?;
