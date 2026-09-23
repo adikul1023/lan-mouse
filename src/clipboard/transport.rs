@@ -119,11 +119,6 @@ pub async fn connect_clipboard(
 
     // 5. Active receive loop
     loop {
-        let active = *super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow() == Some(handle);
-        if !active {
-            log::info!("Clipboard connection to {addr} closed: peer is no longer the active clipboard peer");
-            break;
-        }
 
         tokio::select! {
             result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
@@ -252,11 +247,6 @@ pub async fn listen_clipboard(
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
                                 // Active receive loop
                                 loop {
-                                    let active = *super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow() == Some(handle);
-                                    if !active {
-                                        log::info!("Clipboard connection to {peer_addr} closed: peer is no longer the active clipboard peer");
-                                        break;
-                                    }
 
                                     tokio::select! {
                                         result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
