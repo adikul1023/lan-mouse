@@ -292,10 +292,25 @@ impl Service {
                 } else {
                     self.update_incoming(addr, pos, fingerprint);
                 }
+                
+                if let Some(handle) = self.client_manager.get_client(addr) {
+                    let _ = crate::clipboard::ACTIVE_CLIPBOARD_PEER.send(Some(handle));
+                }
             }
             EmulationEvent::Disconnected { addr } => {
                 if let Some(addr) = self.remove_incoming(addr) {
                     self.notify_frontend(FrontendEvent::IncomingDisconnected(addr));
+                }
+                
+                if let Some(handle) = self.client_manager.get_client(addr) {
+                    crate::clipboard::ACTIVE_CLIPBOARD_PEER.send_if_modified(|current| {
+                        if *current == Some(handle) {
+                            *current = None;
+                            true
+                        } else {
+                            false
+                        }
+                    });
                 }
             }
             EmulationEvent::PortChanged(port) => match port {
