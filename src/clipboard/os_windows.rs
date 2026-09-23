@@ -67,18 +67,22 @@ impl WindowsClipboardPortal {
                 // When we receive an event, check if it's an echo.
                 let mut is_echo = false;
                 
+                log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE received");
+
                 if let Ok(mut supp) = suppressor_clone.lock() {
                     is_echo = supp.check_and_clear_echo();
                 }
 
                 if is_echo {
-                    log::debug!("Ignoring echoed clipboard update from Lan Mouse");
+                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)");
                     continue;
+                } else {
+                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
                 }
 
                 // If not an echo, notify the task
                 if tx.blocking_send(()).is_err() {
-                    log::debug!("Clipboard portal owner_changed channel closed, terminating monitor.");
+                    log::info!("[DEBUG WINDOWS] Clipboard portal owner_changed channel closed, terminating monitor.");
                     break;
                 }
             }
@@ -123,6 +127,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
         data: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
+            log::info!("[DEBUG WINDOWS] selection_write() invoked with length {}", data.len());
             if mime != "text/plain" {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
@@ -133,6 +138,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
             
             if let Ok(mut supp) = self.suppressor.lock() {
                 supp.record_write();
+                log::info!("[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}", supp.expected_seq);
             }
             
             Ok(())
@@ -144,6 +150,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
+            log::info!("[DEBUG WINDOWS] selection_read() invoked for mime {}", mime);
             if mime != "text/plain" {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
@@ -156,7 +163,9 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 return Err("Clipboard text exceeds 10MB limit".to_string());
             }
 
-            Ok(text.into_bytes())
+            let data = text.into_bytes();
+            log::info!("[DEBUG WINDOWS] text length successfully read: {}", data.len());
+            Ok(data)
         })
     }
 

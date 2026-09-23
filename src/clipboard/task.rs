@@ -105,26 +105,28 @@ impl ClipboardTask {
         
         match msg {
             ClipboardMessage::Offer { id, mime_type } => {
-                log::info!("Received clipboard offer (id={id}, mime={mime_type})");
+                log::info!("[DEBUG TASK] Received clipboard offer (id={id}, mime={mime_type}) over TCP");
                 self.current_offer_id = id;
                 if mime_type == "text/plain" {
                     if let Err(e) = portal.set_selection(&mime_type).await {
-                        log::warn!("Failed to set selection on portal: {e}");
+                        log::warn!("[DEBUG TASK] Failed to set selection on portal: {e}");
                     }
                     if portal.eager_fetch() {
+                        log::info!("[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}");
                         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request { id });
                     }
                 }
             }
             ClipboardMessage::Request { id } => {
-                log::info!("Remote requested data for offer {id}");
+                log::info!("[DEBUG TASK] Request received over TCP for offer {id}");
                 if id != self.current_offer_id {
-                    log::warn!("Requested superseded offer {id}");
+                    log::warn!("[DEBUG TASK] Requested superseded offer {id}");
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 404 });
                     return;
                 }
                 match portal.selection_read("text/plain").await {
                     Ok(data) => {
+                        log::info!("[DEBUG TASK] Generating Data message for offer {id}");
                         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data { id, data });
                     }
                     Err(e) => {
@@ -134,13 +136,14 @@ impl ClipboardTask {
                 }
             }
             ClipboardMessage::Data { id, data } => {
-                log::info!("Received clipboard data for offer {id}");
+                log::info!("[DEBUG TASK] Data received over TCP for offer {id} with length {}", data.len());
                 if id != self.current_offer_id {
-                    log::warn!("Received data for superseded offer {id}");
+                    log::warn!("[DEBUG TASK] Received data for superseded offer {id}");
                     return;
                 }
+                log::info!("[DEBUG TASK] Invoking selection_write()");
                 if let Err(e) = portal.selection_write("text/plain", data).await {
-                    log::warn!("Failed to write selection to portal: {e}");
+                    log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
                 }
             }
             ClipboardMessage::Error { id, code } => {
@@ -151,11 +154,12 @@ impl ClipboardTask {
     }
 
     async fn handle_owner_changed(&mut self) {
-        log::info!("Local clipboard owner changed");
+                log::info!("[DEBUG TASK] Clipboard owner-change event received");
         let id = self.next_offer_id;
         self.next_offer_id += 1;
         self.current_offer_id = id;
         
+        log::info!("[DEBUG TASK] Generating Offer (id={id})");
         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
             id,
             mime_type: "text/plain".to_string(),
