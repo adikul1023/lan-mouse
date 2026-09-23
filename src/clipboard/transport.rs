@@ -73,16 +73,8 @@ pub async fn connect_clipboard(
     let tcp_stream = TcpStream::connect(addr).await?;
 
     // 2. Setup TLS Config using existing certificate identity
-    let pem = cert.serialize_pem();
-    let mut cursor = std::io::Cursor::new(pem.as_bytes());
-    let cert_chain = rustls_pemfile::certs(&mut cursor)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    let mut cursor = std::io::Cursor::new(pem.as_bytes());
-    let private_key = rustls_pemfile::private_key(&mut cursor)?
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "No private key in PEM"))?;
+    let cert_chain = cert.certificate.clone();
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
 
     let expected_fingerprint = {
         let hostname = client_manager.get_hostname(handle).unwrap_or_default();
@@ -167,16 +159,8 @@ pub async fn listen_clipboard(
     client_manager: ClientManager,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup TLS Server Config
-    let pem = cert.serialize_pem();
-    let mut cursor = std::io::Cursor::new(pem.as_bytes());
-    let cert_chain = rustls_pemfile::certs(&mut cursor)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    let mut cursor = std::io::Cursor::new(pem.as_bytes());
-    let private_key = rustls_pemfile::private_key(&mut cursor)?
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "No private key in PEM"))?;
+    let cert_chain = cert.certificate.clone();
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
 
     let verifier = Arc::new(super::auth::LanMouseClientVerifier::new(authorized_keys.clone()));
 
