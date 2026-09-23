@@ -221,10 +221,11 @@ impl InputEmulation {
                         let source_duration = time.wrapping_sub(source_press_time) as i64;
                         let receiver_delay = recv_duration - source_duration;
 
-                        if receiver_delay < 0 {
+                        if receiver_delay < 0 && time != 0 {
                             // Release is early, we must delay it!
                             is_delayed = true;
-                            let delay_ms = (-receiver_delay) as u64;
+                            // Cap delay to 500ms max to prevent absurd values in case of timestamp anomalies
+                            let delay_ms = ((-receiver_delay) as u64).min(500);
                             let tx = self.delayed_tx.clone();
                             let delayed_event = DelayedEvent {
                                 event,
