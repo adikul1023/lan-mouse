@@ -138,7 +138,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
             
             if let Ok(mut supp) = self.suppressor.lock() {
                 supp.record_write();
-                log::info!("[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}", supp.expected_seq);
+                log::info!("[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}", supp.expected_sequence_number);
             }
             
             Ok(())
