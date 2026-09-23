@@ -227,8 +227,6 @@ impl VirtualInput {
             }
             Event::Keyboard(e) => match e {
                 KeyboardEvent::Key { time, key, state } => {
-                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                    log::debug!("[INSTRUMENT 3/WLROOTS] -> virtual_keyboard.key sys_time_ms: {ts}, source_time: {time}, key: {key}, state: {state}");
                     self.keyboard.key(time, key, state as u32);
                     if let Ok(mut mods) = self.modifiers.lock() {
                         if mods.update_by_key_event(key, state) {

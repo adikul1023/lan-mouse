@@ -401,15 +401,18 @@ impl EmulationTask {
                                 handle
                             }
                         };
-                        emulation.consume(event, handle).await?;
+                        let _ = emulation.consume(event, handle).await;
                     },
                     ProxyRequest::Remove(addr) => {
                         if let Some(handle) = self.handles.remove(&addr) {
-                            emulation.destroy(handle).await;
+                            let _ = emulation.destroy(handle).await;
                         }
                     }
                     ProxyRequest::Terminate => break Ok(()),
-                    ProxyRequest::Reenable => continue,
+                    ProxyRequest::Reenable => { /* wait for next emulation session */ }
+                },
+                Some(delayed_event) = emulation.next_delayed() => {
+                    let _ = emulation.consume_delayed(delayed_event).await;
                 },
             }
         }
