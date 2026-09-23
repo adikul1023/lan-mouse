@@ -1,5 +1,5 @@
 use std::pin::Pin;
-use futures_util::{Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,35 +11,53 @@ use super::{CLIPBOARD_INCOMING, CLIPBOARD_OUTGOING};
 use crate::clipboard::task::{ClipboardPortal, ClipboardTask};
 
 pub struct AshpdClipboardPortal {
-    clipboard: ashpd::desktop::clipboard::Clipboard,
-    session: Session<ashpd::desktop::input_capture::InputCapture>,
+    clipboard: std::sync::Arc<ashpd::desktop::clipboard::Clipboard>,
+    session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>,
 }
 
 impl AshpdClipboardPortal {
-    pub async fn new(session: Session<ashpd::desktop::input_capture::InputCapture>) -> Result<Self, String> {
+    pub async fn new(session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>) -> Result<Self, String> {
         let clipboard = ashpd::desktop::clipboard::Clipboard::new()
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { clipboard, session })
+        Ok(Self { clipboard: std::sync::Arc::new(clipboard), session })
     }
 }
 
 impl ClipboardPortal for AshpdClipboardPortal {
     fn receive_selection_owner_changed(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+        let clipboard = self.clipboard.clone();
         Box::pin(async move {
-            match self.clipboard.receive_selection_owner_changed(&self.session).await {
-                Ok(stream) => Box::pin(stream.map(|_| ())) as Pin<Box<dyn Stream<Item = ()> + Send>>,
-                Err(_) => Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = ()> + Send>>,
-            }
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::task::spawn(async move {
+                if let Ok(stream) = clipboard.receive_selection_owner_changed::<ashpd::desktop::input_capture::InputCapture>().await {
+                    tokio::pin!(stream);
+                    while let Some(_) = stream.next().await {
+                        if tx.send(()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
     fn receive_selection_transfer(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+        let clipboard = self.clipboard.clone();
         Box::pin(async move {
-            match self.clipboard.receive_selection_transfer(&self.session).await {
-                Ok(stream) => Box::pin(stream.map(|_| ())) as Pin<Box<dyn Stream<Item = ()> + Send>>,
-                Err(_) => Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = ()> + Send>>,
-            }
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::task::spawn(async move {
+                if let Ok(stream) = clipboard.receive_selection_transfer::<ashpd::desktop::input_capture::InputCapture>().await {
+                    tokio::pin!(stream);
+                    while let Some(_) = stream.next().await {
+                        if tx.send(()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
@@ -58,7 +76,7 @@ impl ClipboardPortal for AshpdClipboardPortal {
 
 pub fn init_clipboard_task() {
     tokio::task::spawn_local(async {
-        let session_rx = crate::input_capture::libei::get_clipboard_session_rx();
+        let session_rx = input_capture::libei::get_clipboard_session_rx();
         ClipboardTask::run_with_factory(session_rx, |session| async move {
             match AshpdClipboardPortal::new(session).await {
                 Ok(portal) => Some(Box::new(portal) as Box<dyn ClipboardPortal>),

@@ -16,7 +16,7 @@ pub use error::{CaptureCreationError, CaptureError, InputCaptureError};
 pub mod error;
 
 #[cfg(libei)]
-mod libei;
+pub mod libei;
 
 #[cfg(target_os = "macos")]
 mod macos;

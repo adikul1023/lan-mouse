@@ -112,7 +112,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
         Box::pin(async move {
             // Because we use eager fetching, we never emit events from this stream.
             // The ClipboardTask will fetch data immediately on Offer.
-            let (_tx, rx) = mpsc::channel(1);
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Box::pin(ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }

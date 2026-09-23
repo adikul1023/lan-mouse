@@ -37,13 +37,13 @@ use tokio_util::sync::CancellationToken;
 
 use tokio::sync::watch;
 
-static CLIPBOARD_SESSION_SENDER: std::sync::LazyLock<watch::Sender<Option<Session<InputCapture>>>> =
+static CLIPBOARD_SESSION_SENDER: std::sync::LazyLock<watch::Sender<Option<Arc<Session<InputCapture>>>>> =
     std::sync::LazyLock::new(|| {
         let (tx, _) = watch::channel(None);
         tx
     });
 
-pub fn get_clipboard_session_rx() -> watch::Receiver<Option<Session<InputCapture>>> {
+pub fn get_clipboard_session_rx() -> watch::Receiver<Option<Arc<Session<InputCapture>>>> {
     CLIPBOARD_SESSION_SENDER.subscribe()
 }
 
@@ -327,17 +327,18 @@ async fn do_capture(
         };
 
         if !active_clients.is_empty() {
-            // create session
-            let mut session = match session.take() {
+            let session = match session.take() {
                 Some(s) => s,
                 None => create_session(input_capture).await?.0,
             };
+
+            let session = Arc::new(session);
 
             let _ = CLIPBOARD_SESSION_SENDER.send(Some(session.clone()));
 
             let capture_session = do_capture_session(
                 input_capture,
-                &mut session,
+                &session,
                 &event_tx,
                 &active_clients,
                 &mut next_barrier_id,
@@ -382,7 +383,7 @@ async fn do_capture(
 
 async fn do_capture_session(
     input_capture: &InputCapture,
-    session: &mut Session<InputCapture>,
+    session: &Session<InputCapture>,
     event_tx: &Sender<(Position, CaptureEvent)>,
     active_clients: &[Position],
     next_barrier_id: &mut NonZeroU32,
