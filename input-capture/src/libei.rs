@@ -35,6 +35,18 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use tokio::sync::watch;
+
+static CLIPBOARD_SESSION_SENDER: std::sync::LazyLock<watch::Sender<Option<Session<InputCapture>>>> =
+    std::sync::LazyLock::new(|| {
+        let (tx, _) = watch::channel(None);
+        tx
+    });
+
+pub fn get_clipboard_session_rx() -> watch::Receiver<Option<Session<InputCapture>>> {
+    CLIPBOARD_SESSION_SENDER.subscribe()
+}
+
 use futures_core::Stream;
 
 use input_event::Event;
@@ -321,6 +333,8 @@ async fn do_capture(
                 None => create_session(input_capture).await?.0,
             };
 
+            let _ = CLIPBOARD_SESSION_SENDER.send(Some(session.clone()));
+
             let capture_session = do_capture_session(
                 input_capture,
                 &mut session,
@@ -342,6 +356,8 @@ async fn do_capture(
             if let Err(e) = session.close().await {
                 log::warn!("session.close(): {e}");
             }
+            
+            let _ = CLIPBOARD_SESSION_SENDER.send(None);
 
             // propagate error from capture session
             capture_result?;

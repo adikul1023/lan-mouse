@@ -93,8 +93,8 @@ impl Service {
         let authorized_keys = Arc::new(RwLock::new(config.authorized_fingerprints()));
         // listener + connection
         let listener =
-            LanMouseListener::new(config.port(), cert.clone(), authorized_keys.clone()).await?;
-        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone());
+            LanMouseListener::new(config.port(), cert.clone(), authorized_keys.clone(), client_manager.clone()).await?;
+        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone(), authorized_keys.clone());
 
         // input capture + emulation
         let capture_backend = config.capture_backend().map(|b| b.into());
@@ -106,6 +106,8 @@ impl Service {
         let resolver = DnsResolver::new()?;
 
         let port = config.port();
+        crate::clipboard::init_clipboard_task();
+
         let service = Self {
             config,
             capture,
@@ -350,6 +352,18 @@ impl Service {
             ICaptureEvent::ClientEntered(handle) => {
                 log::info!("entering client {handle} ...");
                 self.spawn_hook_command(handle);
+                let _ = crate::clipboard::ACTIVE_CLIPBOARD_PEER.send(Some(handle));
+            }
+            ICaptureEvent::ClientLeft(handle) => {
+                log::info!("client {handle} left");
+                crate::clipboard::ACTIVE_CLIPBOARD_PEER.send_if_modified(|current| {
+                    if *current == Some(handle) {
+                        *current = None;
+                        true
+                    } else {
+                        false
+                    }
+                });
             }
         }
     }

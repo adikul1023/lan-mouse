@@ -68,6 +68,7 @@ impl LanMouseListener {
         port: u16,
         cert: Certificate,
         authorized_keys: Arc<RwLock<HashMap<String, String>>>,
+        client_manager: crate::client::ClientManager,
     ) -> Result<Self, ListenerCreationError> {
         let (listen_tx, listen_rx) = channel();
         let (request_port_change, mut request_port_change_rx) = channel();
@@ -84,10 +85,7 @@ impl LanMouseListener {
                         .iter()
                         .map(|c| crypto::generate_fingerprint(c))
                         .collect::<Vec<_>>();
-                    if authorized
-                        .read()
-                        .expect("lock")
-                        .contains_key(&fingerprints[0])
+                    if crate::crypto::verify_peer_fingerprint(&fingerprints[0], &authorized)
                     {
                         Ok(())
                     } else {
@@ -111,6 +109,22 @@ impl LanMouseListener {
 
         let listen_addr = SocketAddr::new("0.0.0.0".parse().expect("invalid ip"), port);
         let mut listener = listen(listen_addr, cfg.clone()).await?;
+
+        // --- Phase 1: Clipboard TCP Listener ---
+        let tcp_listen_addr = SocketAddr::new("0.0.0.0".parse().expect("invalid ip"), port);
+        if let Ok(tcp_listener) = tokio::net::TcpListener::bind(tcp_listen_addr).await {
+            let tcp_cert = cert.clone();
+            let tcp_auth = authorized_keys.clone();
+            let tcp_cm = client_manager.clone();
+            spawn_local(async move {
+                if let Err(e) = crate::clipboard::transport::listen_clipboard(tcp_listener, tcp_cert, tcp_auth, tcp_cm).await {
+                    log::warn!("Clipboard TCP listener error: {e}");
+                }
+            });
+        } else {
+            log::warn!("Failed to bind clipboard TCP listener on port {}", port);
+        }
+        // ----------------------------------------
 
         let conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>> =
             Rc::new(AsyncMutex::new(Vec::new()));

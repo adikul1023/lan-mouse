@@ -1,9 +1,10 @@
+pub mod clipboard;
 mod capture;
 pub mod capture_test;
 pub mod client;
 pub mod config;
 mod connect;
-mod crypto;
+pub(crate) mod crypto;
 mod dns;
 mod emulation;
 pub mod emulation_test;

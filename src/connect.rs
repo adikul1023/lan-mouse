@@ -9,7 +9,7 @@ use std::{
     io,
     net::SocketAddr,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::Duration,
 };
 use thiserror::Error;
@@ -100,10 +100,11 @@ pub(crate) struct LanMouseConnection {
     recv_rx: Receiver<(ClientHandle, ProtoEvent)>,
     recv_tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    authorized_keys: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl LanMouseConnection {
-    pub(crate) fn new(cert: Certificate, client_manager: ClientManager) -> Self {
+    pub(crate) fn new(cert: Certificate, client_manager: ClientManager, authorized_keys: Arc<RwLock<HashMap<String, String>>>) -> Self {
         let (recv_tx, recv_rx) = channel();
         Self {
             cert,
@@ -113,6 +114,7 @@ impl LanMouseConnection {
             recv_rx,
             recv_tx,
             ping_response: Default::default(),
+            authorized_keys,
         }
     }
 
@@ -161,12 +163,14 @@ impl LanMouseConnection {
                 self.connecting.clone(),
                 self.recv_tx.clone(),
                 self.ping_response.clone(),
+                self.authorized_keys.clone(),
             ));
         }
         Err(LanMouseConnectionError::NotConnected)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_to_handle(
     client_manager: ClientManager,
     cert: Certificate,
@@ -175,6 +179,7 @@ async fn connect_to_handle(
     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    authorized_keys: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), LanMouseConnectionError> {
     log::info!("client {handle} connecting ...");
     // sending did not work, figure out active conn.
@@ -185,7 +190,7 @@ async fn connect_to_handle(
             .map(|a| SocketAddr::new(a, port))
             .collect::<Vec<_>>();
         log::info!("client ({handle}) connecting ... (ips: {addrs:?})");
-        let res = connect_any(&addrs, cert).await;
+        let res = connect_any(&addrs, cert.clone()).await;
         let (conn, addr) = match res {
             Ok(c) => c,
             Err(e) => {
@@ -211,8 +216,33 @@ async fn connect_to_handle(
             log::debug!("hello send to {addr} failed: {e}");
         }
 
+        // --- Phase 1: Initiate optional Clipboard connection ---
+        let remote_fingerprint = {
+            let hostname = client_manager.get_hostname(handle).unwrap_or_default();
+            let auth_keys = authorized_keys.read().expect("lock");
+            auth_keys.iter().find(|(_, h)| *h == &hostname).map(|(f, _)| f.clone())
+        };
+        let local_fingerprint = crate::crypto::generate_fingerprint(&cert.certificate[0]);
+
+        if let Some(remote_fp) = remote_fingerprint {
+            if local_fingerprint > remote_fp {
+                let cert_clone = cert.clone();
+                let cm_clone = client_manager.clone();
+                let auth_keys = authorized_keys.clone();
+                spawn_local(async move {
+                    if let Err(e) = crate::clipboard::transport::connect_clipboard(cm_clone, handle, addr, cert_clone, auth_keys).await {
+                        log::warn!("Clipboard TCP connection to {addr} failed: {e}");
+                    }
+                });
+            } else {
+                log::info!("Clipboard TCP connection: waiting for {addr} to initiate (identity tie-breaker)");
+            }
+        }
+        // -------------------------------------------------------
+
         // poll connection for active
         spawn_local(ping_pong(addr, conn.clone(), ping_response.clone()));
+
 
         // receiver
         spawn_local(receive_loop(

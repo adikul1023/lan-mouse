@@ -69,3 +69,10 @@ pub(crate) fn generate_key_and_cert(path: &Path) -> Result<Certificate, Error> {
     writer.write_all(serialized.as_bytes())?;
     Ok(cert)
 }
+
+pub fn verify_peer_fingerprint(
+    fingerprint: &str,
+    authorized_keys: &std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
+) -> bool {
+    authorized_keys.read().unwrap().contains_key(fingerprint)
+}
