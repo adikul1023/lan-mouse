@@ -61,30 +61,19 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
 }
 
 pub async fn connect_clipboard(
-    client_manager: ClientManager,
-    handle: ClientHandle,
+    handle: lan_mouse_ipc::ClientHandle,
+    expected_fingerprint: String,
     addr: SocketAddr,
     cert: Certificate,
-    authorized_keys: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Initiating clipboard TCP connection to {addr}...");
 
     // 1. Establish TCP
-    let tcp_stream = TcpStream::connect(addr).await?;
+    let tcp_stream = tokio::net::TcpStream::connect(addr).await?;
 
     // 2. Setup TLS Config using existing certificate identity
     let cert_chain = cert.certificate.clone();
     let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
-
-    let expected_fingerprint = {
-        let hostname = client_manager.get_hostname(handle).unwrap_or_default();
-        let auth_keys = authorized_keys.read().expect("lock");
-        auth_keys.iter().find(|(_, h)| *h == &hostname).map(|(f, _)| f.clone())
-    };
-
-    let Some(expected_fingerprint) = expected_fingerprint else {
-        return Err("No authorized fingerprint found for peer".into());
-    };
 
     let verifier = Arc::new(super::auth::LanMouseServerVerifier::new(expected_fingerprint));
 

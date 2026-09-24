@@ -134,6 +134,9 @@ impl LanMouseListener {
         let listen_task: JoinHandle<()> = {
             let listen_tx = listen_tx.clone();
             let connection_attempts = connection_attempts.clone();
+            let local_cert_clone = cert.clone();
+            let auth_clone = authorized_keys.clone();
+            let cm_clone = client_manager.clone();
             spawn_local(async move {
                 loop {
                     let sleep = tokio::time::sleep(Duration::from_secs(2));
@@ -149,7 +152,48 @@ impl LanMouseListener {
                                 let certs = dtls_conn.connection_state().await.peer_certificates;
                                 let cert = certs.first().expect("cert");
                                 let fingerprint = crypto::generate_fingerprint(cert);
-                                listen_tx.send(ListenEvent::Accept { addr, fingerprint }).expect("channel closed");
+                                listen_tx.send(ListenEvent::Accept { addr, fingerprint: fingerprint.clone() }).expect("channel closed");
+
+                                let local_fingerprint = crypto::generate_fingerprint(&local_cert_clone.certificate[0]);
+                                if local_fingerprint > fingerprint {
+                                    let mut tcp_addr = addr;
+                                    let cm = cm_clone.clone();
+                                    
+                                    // Find handle by checking authorized keys and matching hostname
+                                    let hostname = auth_clone.read().expect("lock").get(&fingerprint).cloned();
+                                    let mut found_handle = None;
+                                    if let Some(hostname) = hostname {
+                                        for (h, c, s) in cm.get_client_states() {
+                                            if c.hostname == Some(hostname.clone()) {
+                                                found_handle = Some(h);
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(handle) = found_handle {
+                                        if let Some(port) = cm.get_port(handle) {
+                                            tcp_addr.set_port(port);
+                                        } else {
+                                            tcp_addr.set_port(lan_mouse_ipc::DEFAULT_PORT);
+                                        }
+                                        
+                                        log::info!("Clipboard TCP connection: initiating to {tcp_addr} (identity tie-breaker)");
+                                        
+                                        let c_cert = local_cert_clone.clone();
+                                        let remote_fp_clone = fingerprint.clone();
+                                        tokio::task::spawn_local(async move {
+                                            if let Err(e) = crate::clipboard::transport::connect_clipboard(handle, remote_fp_clone, tcp_addr, c_cert).await {
+                                                log::warn!("Clipboard TCP connection failed: {e}");
+                                            }
+                                        });
+                                    } else {
+                                        log::warn!("Clipboard TCP connection: could not find handle for {addr}");
+                                    }
+                                } else {
+                                    log::info!("Clipboard TCP connection: waiting for {addr} to initiate (identity tie-breaker)");
+                                }
+
                                 spawn_local(read_loop(conns_clone.clone(), addr, conn, listen_tx.clone()));
                             },
                             Err(e) => {

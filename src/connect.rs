@@ -228,11 +228,12 @@ async fn connect_to_handle(
         if let Some(remote_fp) = remote_fingerprint {
             if local_fingerprint > remote_fp {
                 let cert_clone = cert.clone();
-                let cm_clone = client_manager.clone();
-                let auth_keys = authorized_keys.clone();
+                let remote_fp_clone = remote_fp.clone();
+                let tcp_addr = addr; // connect_to_handle already uses the configured port, so addr is fine
+                
                 spawn_local(async move {
-                    if let Err(e) = crate::clipboard::transport::connect_clipboard(cm_clone, handle, addr, cert_clone, auth_keys).await {
-                        log::warn!("Clipboard TCP connection to {addr} failed: {e}");
+                    if let Err(e) = crate::clipboard::transport::connect_clipboard(handle, remote_fp_clone, tcp_addr, cert_clone).await {
+                        log::warn!("Clipboard TCP connection to {tcp_addr} failed: {e}");
                     }
                 });
             } else {
