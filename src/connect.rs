@@ -217,10 +217,11 @@ async fn connect_to_handle(
         }
 
         // --- Phase 1: Initiate optional Clipboard connection ---
-        let remote_fingerprint = {
-            let hostname = client_manager.get_hostname(handle).unwrap_or_default();
-            let auth_keys = authorized_keys.read().expect("lock");
-            auth_keys.iter().find(|(_, h)| *h == &hostname).map(|(f, _)| f.clone())
+        let remote_fingerprint = if let Some(dtls_conn) = conn.as_any().downcast_ref::<webrtc_dtls::conn::DTLSConn>() {
+            let certs = dtls_conn.connection_state().await.peer_certificates;
+            certs.first().map(|c| crate::crypto::generate_fingerprint(c))
+        } else {
+            None
         };
         let local_fingerprint = crate::crypto::generate_fingerprint(&cert.certificate[0]);
 
