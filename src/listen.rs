@@ -159,14 +159,16 @@ impl LanMouseListener {
                                     let mut tcp_addr = addr;
                                     let cm = cm_clone.clone();
                                     
-                                    // Find handle by checking authorized keys and matching hostname
-                                    let hostname = auth_clone.read().expect("lock").get(&fingerprint).cloned();
-                                    let mut found_handle = None;
-                                    if let Some(hostname) = hostname {
-                                        for (h, c, s) in cm.get_client_states() {
-                                            if c.hostname == Some(hostname.clone()) {
-                                                found_handle = Some(h);
-                                                break;
+                                    // Find handle by checking IP, then fallback to authorized_keys hostname
+                                    let mut found_handle = cm.get_client(addr);
+                                    if found_handle.is_none() {
+                                        let hostname = auth_clone.read().expect("lock").get(&fingerprint).cloned();
+                                        if let Some(hostname) = hostname {
+                                            for (h, c, _s) in cm.get_client_states() {
+                                                if c.hostname == Some(hostname.clone()) {
+                                                    found_handle = Some(h);
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
