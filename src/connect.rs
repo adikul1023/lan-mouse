@@ -163,7 +163,6 @@ impl LanMouseConnection {
                 self.connecting.clone(),
                 self.recv_tx.clone(),
                 self.ping_response.clone(),
-                self.authorized_keys.clone(),
             ));
         }
         Err(LanMouseConnectionError::NotConnected)
@@ -179,7 +178,6 @@ async fn connect_to_handle(
     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
-    authorized_keys: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), LanMouseConnectionError> {
     log::info!("client {handle} connecting ...");
     // sending did not work, figure out active conn.
@@ -232,7 +230,7 @@ async fn connect_to_handle(
                 let tcp_addr = addr; // connect_to_handle already uses the configured port, so addr is fine
                 
                 spawn_local(async move {
-                    if let Err(e) = crate::clipboard::transport::connect_clipboard(handle, remote_fp_clone, tcp_addr, cert_clone).await {
+                    if let Err(e) = crate::clipboard::transport::connect_clipboard(remote_fp_clone, tcp_addr, cert_clone).await {
                         log::warn!("Clipboard TCP connection to {tcp_addr} failed: {e}");
                     }
                 });

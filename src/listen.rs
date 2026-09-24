@@ -134,7 +134,6 @@ impl LanMouseListener {
             let listen_tx = listen_tx.clone();
             let connection_attempts = connection_attempts.clone();
             let local_cert_clone = cert.clone();
-            let auth_clone = authorized_keys.clone();
             let cm_clone = client_manager.clone();
             spawn_local(async move {
                 loop {
