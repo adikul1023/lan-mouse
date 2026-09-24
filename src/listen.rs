@@ -116,9 +116,8 @@ impl LanMouseListener {
             log::info!("[DEBUG TRANSPORT] Clipboard TCP listener successfully bound to {}", tcp_listen_addr);
             let tcp_cert = cert.clone();
             let tcp_auth = authorized_keys.clone();
-            let tcp_cm = client_manager.clone();
             spawn_local(async move {
-                if let Err(e) = crate::clipboard::transport::listen_clipboard(tcp_listener, tcp_cert, tcp_auth, tcp_cm).await {
+                if let Err(e) = crate::clipboard::transport::listen_clipboard(tcp_listener, tcp_cert, tcp_auth).await {
                     log::warn!("Clipboard TCP listener error: {e}");
                 }
             });
@@ -159,39 +158,25 @@ impl LanMouseListener {
                                     let mut tcp_addr = addr;
                                     let cm = cm_clone.clone();
                                     
-                                    // Find handle by checking IP, then fallback to authorized_keys hostname
-                                    let mut found_handle = cm.get_client(addr);
-                                    if found_handle.is_none() {
-                                        let hostname = auth_clone.read().expect("lock").get(&fingerprint).cloned();
-                                        if let Some(hostname) = hostname {
-                                            for (h, c, _s) in cm.get_client_states() {
-                                                if c.hostname == Some(hostname.clone()) {
-                                                    found_handle = Some(h);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if let Some(handle) = found_handle {
+                                    if let Some(handle) = cm.get_client(addr) {
                                         if let Some(port) = cm.get_port(handle) {
                                             tcp_addr.set_port(port);
                                         } else {
                                             tcp_addr.set_port(lan_mouse_ipc::DEFAULT_PORT);
                                         }
-                                        
-                                        log::info!("Clipboard TCP connection: initiating to {tcp_addr} (identity tie-breaker)");
-                                        
-                                        let c_cert = local_cert_clone.clone();
-                                        let remote_fp_clone = fingerprint.clone();
-                                        tokio::task::spawn_local(async move {
-                                            if let Err(e) = crate::clipboard::transport::connect_clipboard(handle, remote_fp_clone, tcp_addr, c_cert).await {
-                                                log::warn!("Clipboard TCP connection failed: {e}");
-                                            }
-                                        });
                                     } else {
-                                        log::warn!("Clipboard TCP connection: could not find handle for {addr}");
+                                        tcp_addr.set_port(lan_mouse_ipc::DEFAULT_PORT);
                                     }
+                                    
+                                    log::info!("Clipboard TCP connection: initiating to {tcp_addr} (identity tie-breaker)");
+                                    
+                                    let c_cert = local_cert_clone.clone();
+                                    let remote_fp_clone = fingerprint.clone();
+                                    tokio::task::spawn_local(async move {
+                                        if let Err(e) = crate::clipboard::transport::connect_clipboard(remote_fp_clone, tcp_addr, c_cert).await {
+                                            log::warn!("Clipboard TCP connection failed: {e}");
+                                        }
+                                    });
                                 } else {
                                     log::info!("Clipboard TCP connection: waiting for {addr} to initiate (identity tie-breaker)");
                                 }

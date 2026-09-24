@@ -61,7 +61,6 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
 }
 
 pub async fn connect_clipboard(
-    handle: lan_mouse_ipc::ClientHandle,
     expected_fingerprint: String,
     addr: SocketAddr,
     cert: Certificate,
@@ -128,7 +127,7 @@ pub async fn connect_clipboard(
                 }
             }
             Ok(msg) = outgoing_rx.recv() => {
-                if *super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow() == Some(handle) {
+                if super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow().is_some() {
                     if let Err(e) = write_message(&mut tls_stream, &msg).await {
                         log::warn!("Failed to write clipboard message to {addr}: {e}");
                         break;
@@ -145,7 +144,6 @@ pub async fn listen_clipboard(
     listener: TcpListener,
     cert: Certificate,
     authorized_keys: Arc<RwLock<HashMap<String, String>>>,
-    client_manager: ClientManager,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup TLS Server Config
     let cert_chain = cert.certificate.clone();
@@ -164,7 +162,6 @@ pub async fn listen_clipboard(
         let (tcp_stream, peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
         let authorized_keys = authorized_keys.clone();
-        let client_manager = client_manager.clone();
 
         tokio::task::spawn_local(async move {
             match acceptor.accept(tcp_stream).await {
@@ -181,27 +178,7 @@ pub async fn listen_clipboard(
                     }
 
                     let fingerprint = crate::crypto::generate_fingerprint(&peer_certs[0]);
-
-                    let hostname = authorized_keys.read().expect("lock").get(&fingerprint).cloned();
-                    let Some(hostname) = hostname else {
-                        log::warn!("Clipboard TLS accept failed: Peer hostname not found");
-                        return;
-                    };
-
-                    let mut found_handle = None;
-                    for (h, c, s) in client_manager.get_client_states() {
-                        if c.hostname == Some(hostname.clone()) && s.active && Some(peer_addr.ip()) == s.active_addr.map(|a| a.ip()) {
-                            found_handle = Some(h);
-                            break;
-                        }
-                    }
-
-                    let Some(handle) = found_handle else {
-                        log::warn!("Clipboard TLS accept failed: Peer {hostname} is not actively connected via DTLS");
-                        return;
-                    };
-
-                    log::info!("Clipboard TLS connection accepted from {peer_addr} (handle: {handle})");
+                    log::info!("Clipboard TLS connection accepted from {peer_addr} (fingerprint: {fingerprint})");
 
                     // Wait for Hello from Client
                     match tokio::time::timeout(std::time::Duration::from_secs(5), read_message(&mut tls_stream)).await {
@@ -236,7 +213,7 @@ pub async fn listen_clipboard(
                                             }
                                         }
                                         Ok(msg) = outgoing_rx.recv() => {
-                                            if *super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow() == Some(handle) {
+                                            if super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow().is_some() {
                                                 if let Err(e) = write_message(&mut tls_stream, &msg).await {
                                                     log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
                                                     break;
