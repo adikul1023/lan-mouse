@@ -74,6 +74,78 @@ impl ClipboardPortal for AshpdClipboardPortal {
     }
 }
 
+pub struct WlClipboardPortal {}
+
+impl WlClipboardPortal {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl ClipboardPortal for WlClipboardPortal {
+    fn receive_selection_owner_changed(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+        Box::pin(async move {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::task::spawn(async move {
+                if let Ok(mut child) = tokio::process::Command::new("wl-paste")
+                    .arg("--watch")
+                    .arg("echo")
+                    .arg("changed")
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    if let Some(mut stdout) = child.stdout.take() {
+                        let mut buf = [0u8; 1024];
+                        while let Ok(n) = stdout.read(&mut buf).await {
+                            if n == 0 { break; }
+                            if tx.send(()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+        })
+    }
+
+    fn receive_selection_transfer(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+        Box::pin(async move {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+        })
+    }
+
+    fn selection_write<'a>(&'a self, _mime: &'a str, data: Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut child = tokio::process::Command::new("wl-copy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+                
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(&data).await;
+            }
+            Ok(())
+        })
+    }
+
+    fn selection_read<'a>(&'a self, _mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let output = tokio::process::Command::new("wl-paste")
+                .arg("--no-newline")
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(output.stdout)
+        })
+    }
+
+    fn set_selection<'a>(&'a self, mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
 pub fn init_clipboard_task() {
     tokio::task::spawn_local(async {
         let session_rx = input_capture::libei::get_clipboard_session_rx();
@@ -82,7 +154,8 @@ pub fn init_clipboard_task() {
                 Ok(portal) => Some(Box::new(portal) as Box<dyn ClipboardPortal>),
                 Err(e) => {
                     log::warn!("Failed to create ashpd Clipboard proxy: {}", e);
-                    None
+                    log::info!("Falling back to wl-clipboard for Linux Wayland clipboard support");
+                    Some(Box::new(WlClipboardPortal::new()) as Box<dyn ClipboardPortal>)
                 }
             }
         }).await
