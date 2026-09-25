@@ -1,9 +1,9 @@
-use std::pin::Pin;
+use ashpd::desktop::Session;
 use futures::{Stream, StreamExt};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::pin::Pin;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use ashpd::desktop::Session;
 
 use super::protocol::ClipboardMessage;
 use super::{CLIPBOARD_INCOMING, CLIPBOARD_OUTGOING};
@@ -16,21 +16,34 @@ pub struct AshpdClipboardPortal {
 }
 
 impl AshpdClipboardPortal {
-    pub async fn new(session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>) -> Result<Self, String> {
+    pub async fn new(
+        session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>,
+    ) -> Result<Self, String> {
         let clipboard = ashpd::desktop::clipboard::Clipboard::new()
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { clipboard: std::sync::Arc::new(clipboard), session })
+        Ok(Self {
+            clipboard: std::sync::Arc::new(clipboard),
+            session,
+        })
     }
 }
 
 impl ClipboardPortal for AshpdClipboardPortal {
-    fn receive_selection_owner_changed(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    fn receive_selection_owner_changed(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         let clipboard = self.clipboard.clone();
         Box::pin(async move {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tokio::task::spawn(async move {
-                if let Ok(stream) = clipboard.receive_selection_owner_changed::<ashpd::desktop::input_capture::InputCapture>().await {
+                if let Ok(stream) = clipboard
+                    .receive_selection_owner_changed::<ashpd::desktop::input_capture::InputCapture>(
+                    )
+                    .await
+                {
                     tokio::pin!(stream);
                     while let Some(_) = stream.next().await {
                         if tx.send(()).await.is_err() {
@@ -39,16 +52,24 @@ impl ClipboardPortal for AshpdClipboardPortal {
                     }
                 }
             });
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+                as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
-    fn receive_selection_transfer(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    fn receive_selection_transfer(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         let clipboard = self.clipboard.clone();
         Box::pin(async move {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tokio::task::spawn(async move {
-                if let Ok(stream) = clipboard.receive_selection_transfer::<ashpd::desktop::input_capture::InputCapture>().await {
+                if let Ok(stream) = clipboard
+                    .receive_selection_transfer::<ashpd::desktop::input_capture::InputCapture>()
+                    .await
+                {
                     tokio::pin!(stream);
                     while let Some(_) = stream.next().await {
                         if tx.send(()).await.is_err() {
@@ -57,19 +78,30 @@ impl ClipboardPortal for AshpdClipboardPortal {
                     }
                 }
             });
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+                as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
-    fn selection_write<'a>(&'a self, _mime: &'a str, _data: Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn selection_write<'a>(
+        &'a self,
+        _mime: &'a str,
+        _data: Vec<u8>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
 
-    fn selection_read<'a>(&'a self, _mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+    fn selection_read<'a>(
+        &'a self,
+        _mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move { Ok(Vec::new()) })
     }
 
-    fn set_selection<'a>(&'a self, mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn set_selection<'a>(
+        &'a self,
+        mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
 }
@@ -83,7 +115,11 @@ impl WlClipboardPortal {
 }
 
 impl ClipboardPortal for WlClipboardPortal {
-    fn receive_selection_owner_changed(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    fn receive_selection_owner_changed(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tokio::task::spawn(async move {
@@ -97,7 +133,9 @@ impl ClipboardPortal for WlClipboardPortal {
                     if let Some(mut stdout) = child.stdout.take() {
                         let mut buf = [0u8; 1024];
                         while let Ok(n) = stdout.read(&mut buf).await {
-                            if n == 0 { break; }
+                            if n == 0 {
+                                break;
+                            }
                             if tx.send(()).await.is_err() {
                                 break;
                             }
@@ -105,24 +143,34 @@ impl ClipboardPortal for WlClipboardPortal {
                     }
                 }
             });
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+                as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
-    fn receive_selection_transfer(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    fn receive_selection_transfer(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+                as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
     }
 
-    fn selection_write<'a>(&'a self, _mime: &'a str, data: Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn selection_write<'a>(
+        &'a self,
+        _mime: &'a str,
+        data: Vec<u8>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
             let mut child = tokio::process::Command::new("wl-copy")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| e.to_string())?;
-                
+
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(&data).await;
             }
@@ -130,7 +178,10 @@ impl ClipboardPortal for WlClipboardPortal {
         })
     }
 
-    fn selection_read<'a>(&'a self, _mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+    fn selection_read<'a>(
+        &'a self,
+        _mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
             let output = tokio::process::Command::new("wl-paste")
                 .arg("--no-newline")
@@ -141,7 +192,10 @@ impl ClipboardPortal for WlClipboardPortal {
         })
     }
 
-    fn set_selection<'a>(&'a self, mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn set_selection<'a>(
+        &'a self,
+        mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
 }
@@ -158,6 +212,7 @@ pub fn init_clipboard_task() {
                     Some(Box::new(WlClipboardPortal::new()) as Box<dyn ClipboardPortal>)
                 }
             }
-        }).await
+        })
+        .await
     });
 }

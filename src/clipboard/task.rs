@@ -1,17 +1,35 @@
-use std::pin::Pin;
 use futures::{Stream, StreamExt};
+use std::pin::Pin;
 use tokio::sync::watch;
 
 use super::protocol::ClipboardMessage;
 use super::{CLIPBOARD_INCOMING, CLIPBOARD_OUTGOING};
 
 pub trait ClipboardPortal: Send + Sync {
-    fn receive_selection_owner_changed(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>>;
-    fn receive_selection_transfer(&self) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>>;
-    fn selection_write<'a>(&'a self, mime: &'a str, data: Vec<u8>) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
-    fn selection_read<'a>(&'a self, mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
-    fn set_selection<'a>(&'a self, mime: &'a str) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
-    
+    fn receive_selection_owner_changed(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    >;
+    fn receive_selection_transfer(
+        &self,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    >;
+    fn selection_write<'a>(
+        &'a self,
+        mime: &'a str,
+        data: Vec<u8>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+    fn selection_read<'a>(
+        &'a self,
+        mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+    fn set_selection<'a>(
+        &'a self,
+        mime: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
     /// Return true if the OS integration expects the network to eagerly fetch data immediately upon receiving an Offer.
     fn eager_fetch(&self) -> bool {
         false
@@ -25,8 +43,10 @@ pub struct ClipboardTask {
 }
 
 impl ClipboardTask {
-    pub async fn run_with_factory<S, F, Fut>(mut session_rx: watch::Receiver<Option<S>>, portal_factory: F)
-    where
+    pub async fn run_with_factory<S, F, Fut>(
+        mut session_rx: watch::Receiver<Option<S>>,
+        portal_factory: F,
+    ) where
         S: Clone + Send + Sync + 'static,
         F: Fn(S) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Option<Box<dyn ClipboardPortal>>> + Send,
@@ -56,11 +76,11 @@ impl ClipboardTask {
             tokio::select! {
                 Ok(_) = session_rx.changed() => {
                     let session_opt = { session_rx.borrow().clone() };
-                    
+
                     owner_changed_stream = None;
                     transfer_stream = None;
                     task.portal = None;
-                    
+
                     if let Some(session) = session_opt {
                         log::info!("ClipboardTask: Received new InputCapture session");
                         if let Some(portal) = portal_factory(session).await {
@@ -72,11 +92,11 @@ impl ClipboardTask {
                         log::info!("ClipboardTask: Session cleared");
                     }
                 }
-                
+
                 Ok(msg) = incoming_rx.recv() => {
                     task.handle_incoming_message(msg).await;
                 }
-                
+
                 Some(_) = async {
                     if let Some(s) = &mut owner_changed_stream {
                         s.next().await
@@ -102,17 +122,21 @@ impl ClipboardTask {
 
     async fn handle_incoming_message(&mut self, msg: ClipboardMessage) {
         let Some(portal) = &self.portal else { return };
-        
+
         match msg {
             ClipboardMessage::Offer { id, mime_type } => {
-                log::info!("[DEBUG TASK] Received clipboard offer (id={id}, mime={mime_type}) over TCP");
+                log::info!(
+                    "[DEBUG TASK] Received clipboard offer (id={id}, mime={mime_type}) over TCP"
+                );
                 self.current_offer_id = id;
                 if mime_type == "text/plain" {
                     if let Err(e) = portal.set_selection(&mime_type).await {
                         log::warn!("[DEBUG TASK] Failed to set selection on portal: {e}");
                     }
                     if portal.eager_fetch() {
-                        log::info!("[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}");
+                        log::info!(
+                            "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}"
+                        );
                         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request { id });
                     }
                 }
@@ -136,7 +160,10 @@ impl ClipboardTask {
                 }
             }
             ClipboardMessage::Data { id, data } => {
-                log::info!("[DEBUG TASK] Data received over TCP for offer {id} with length {}", data.len());
+                log::info!(
+                    "[DEBUG TASK] Data received over TCP for offer {id} with length {}",
+                    data.len()
+                );
                 if id != self.current_offer_id {
                     log::warn!("[DEBUG TASK] Received data for superseded offer {id}");
                     return;
@@ -154,11 +181,11 @@ impl ClipboardTask {
     }
 
     async fn handle_owner_changed(&mut self) {
-                log::info!("[DEBUG TASK] Clipboard owner-change event received");
+        log::info!("[DEBUG TASK] Clipboard owner-change event received");
         let id = self.next_offer_id;
         self.next_offer_id += 1;
         self.current_offer_id = id;
-        
+
         log::info!("[DEBUG TASK] Generating Offer (id={id})");
         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
             id,

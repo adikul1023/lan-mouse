@@ -85,8 +85,7 @@ impl LanMouseListener {
                         .iter()
                         .map(|c| crypto::generate_fingerprint(c))
                         .collect::<Vec<_>>();
-                    if crate::crypto::verify_peer_fingerprint(&fingerprints[0], &authorized)
-                    {
+                    if crate::crypto::verify_peer_fingerprint(&fingerprints[0], &authorized) {
                         Ok(())
                     } else {
                         let fingerprint = fingerprints.into_iter().next().expect("fingerprint");
@@ -113,11 +112,17 @@ impl LanMouseListener {
         // --- Phase 1: Clipboard TCP Listener ---
         let tcp_listen_addr = SocketAddr::new("0.0.0.0".parse().expect("invalid ip"), port);
         if let Ok(tcp_listener) = tokio::net::TcpListener::bind(tcp_listen_addr).await {
-            log::info!("[DEBUG TRANSPORT] Clipboard TCP listener successfully bound to {}", tcp_listen_addr);
+            log::info!(
+                "[DEBUG TRANSPORT] Clipboard TCP listener successfully bound to {}",
+                tcp_listen_addr
+            );
             let tcp_cert = cert.clone();
             let tcp_auth = authorized_keys.clone();
             spawn_local(async move {
-                if let Err(e) = crate::clipboard::transport::listen_clipboard(tcp_listener, tcp_cert, tcp_auth).await {
+                if let Err(e) =
+                    crate::clipboard::transport::listen_clipboard(tcp_listener, tcp_cert, tcp_auth)
+                        .await
+                {
                     log::warn!("Clipboard TCP listener error: {e}");
                 }
             });
@@ -156,7 +161,7 @@ impl LanMouseListener {
                                 if local_fingerprint > fingerprint {
                                     let mut tcp_addr = addr;
                                     let cm = cm_clone.clone();
-                                    
+
                                     if let Some(handle) = cm.get_client(addr) {
                                         if let Some(port) = cm.get_port(handle) {
                                             tcp_addr.set_port(port);
@@ -166,9 +171,9 @@ impl LanMouseListener {
                                     } else {
                                         tcp_addr.set_port(lan_mouse_ipc::DEFAULT_PORT);
                                     }
-                                    
+
                                     log::info!("Clipboard TCP connection: initiating to {tcp_addr} (identity tie-breaker)");
-                                    
+
                                     let c_cert = local_cert_clone.clone();
                                     let remote_fp_clone = fingerprint.clone();
                                     tokio::task::spawn_local(async move {

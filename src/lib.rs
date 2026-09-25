@@ -1,7 +1,7 @@
-pub mod clipboard;
 mod capture;
 pub mod capture_test;
 pub mod client;
+pub mod clipboard;
 pub mod config;
 mod connect;
 pub(crate) mod crypto;

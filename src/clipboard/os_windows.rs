@@ -19,7 +19,9 @@ struct EchoSuppressor {
 
 impl EchoSuppressor {
     fn new() -> Self {
-        Self { expected_sequence_number: None }
+        Self {
+            expected_sequence_number: None,
+        }
     }
 
     fn record_write(&mut self) {
@@ -66,7 +68,7 @@ impl WindowsClipboardPortal {
             while let Ok(true) = monitor.recv() {
                 // When we receive an event, check if it's an echo.
                 let mut is_echo = false;
-                
+
                 log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE received");
 
                 if let Ok(mut supp) = suppressor_clone.lock() {
@@ -74,7 +76,9 @@ impl WindowsClipboardPortal {
                 }
 
                 if is_echo {
-                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)");
+                    log::info!(
+                        "[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)"
+                    );
                     continue;
                 } else {
                     log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
@@ -82,7 +86,9 @@ impl WindowsClipboardPortal {
 
                 // If not an echo, notify the task
                 if tx.blocking_send(()).is_err() {
-                    log::info!("[DEBUG WINDOWS] Clipboard portal owner_changed channel closed, terminating monitor.");
+                    log::info!(
+                        "[DEBUG WINDOWS] Clipboard portal owner_changed channel closed, terminating monitor."
+                    );
                     break;
                 }
             }
@@ -103,7 +109,9 @@ impl ClipboardPortal for WindowsClipboardPortal {
 
     fn receive_selection_owner_changed(
         &self,
-    ) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let rx = self.owner_changed_rx.lock().await.take().unwrap();
             Box::pin(ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item = ()> + Send>>
@@ -112,7 +120,9 @@ impl ClipboardPortal for WindowsClipboardPortal {
 
     fn receive_selection_transfer(
         &self,
-    ) -> Pin<Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>> {
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             // Because we use eager fetching, we never emit events from this stream.
             // The ClipboardTask will fetch data immediately on Offer.
@@ -127,7 +137,10 @@ impl ClipboardPortal for WindowsClipboardPortal {
         data: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            log::info!("[DEBUG WINDOWS] selection_write() invoked with length {}", data.len());
+            log::info!(
+                "[DEBUG WINDOWS] selection_write() invoked with length {}",
+                data.len()
+            );
             if mime != "text/plain" {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
@@ -135,12 +148,15 @@ impl ClipboardPortal for WindowsClipboardPortal {
             let text = String::from_utf8(data).map_err(|e| e.to_string())?;
 
             clipboard_win::set_clipboard(formats::Unicode, text).map_err(|e| e.to_string())?;
-            
+
             if let Ok(mut supp) = self.suppressor.lock() {
                 supp.record_write();
-                log::info!("[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}", supp.expected_sequence_number);
+                log::info!(
+                    "[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}",
+                    supp.expected_sequence_number
+                );
             }
-            
+
             Ok(())
         })
     }
@@ -155,8 +171,9 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
 
-            let text: String = clipboard_win::get_clipboard(formats::Unicode).map_err(|e| e.to_string())?;
-            
+            let text: String =
+                clipboard_win::get_clipboard(formats::Unicode).map_err(|e| e.to_string())?;
+
             // Apply 10MB limit
             let max_bytes = 10 * 1024 * 1024;
             if text.len() > max_bytes {
@@ -164,7 +181,10 @@ impl ClipboardPortal for WindowsClipboardPortal {
             }
 
             let data = text.into_bytes();
-            log::info!("[DEBUG WINDOWS] text length successfully read: {}", data.len());
+            log::info!(
+                "[DEBUG WINDOWS] text length successfully read: {}",
+                data.len()
+            );
             Ok(data)
         })
     }

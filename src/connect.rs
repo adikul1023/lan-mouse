@@ -104,7 +104,11 @@ pub(crate) struct LanMouseConnection {
 }
 
 impl LanMouseConnection {
-    pub(crate) fn new(cert: Certificate, client_manager: ClientManager, authorized_keys: Arc<RwLock<HashMap<String, String>>>) -> Self {
+    pub(crate) fn new(
+        cert: Certificate,
+        client_manager: ClientManager,
+        authorized_keys: Arc<RwLock<HashMap<String, String>>>,
+    ) -> Self {
         let (recv_tx, recv_rx) = channel();
         Self {
             cert,
@@ -163,6 +167,7 @@ impl LanMouseConnection {
                 self.connecting.clone(),
                 self.recv_tx.clone(),
                 self.ping_response.clone(),
+                self.authorized_keys.clone(),
             ));
         }
         Err(LanMouseConnectionError::NotConnected)
@@ -178,6 +183,7 @@ async fn connect_to_handle(
     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    authorized_keys: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), LanMouseConnectionError> {
     log::info!("client {handle} connecting ...");
     // sending did not work, figure out active conn.
@@ -215,34 +221,56 @@ async fn connect_to_handle(
         }
 
         // --- Phase 1: Initiate optional Clipboard connection ---
-        let remote_fingerprint = if let Some(dtls_conn) = conn.as_any().downcast_ref::<webrtc_dtls::conn::DTLSConn>() {
-            let certs = dtls_conn.connection_state().await.peer_certificates;
-            certs.first().map(|c| crate::crypto::generate_fingerprint(c))
-        } else {
-            None
-        };
+        let remote_fingerprint =
+            if let Some(dtls_conn) = conn.as_any().downcast_ref::<webrtc_dtls::conn::DTLSConn>() {
+                let certs = dtls_conn.connection_state().await.peer_certificates;
+                certs
+                    .first()
+                    .map(|c| crate::crypto::generate_fingerprint(c))
+            } else {
+                None
+            };
         let local_fingerprint = crate::crypto::generate_fingerprint(&cert.certificate[0]);
 
         if let Some(remote_fp) = remote_fingerprint {
+            // Auto-authorize the remote peer's fingerprint since we explicitly connected to it
+            {
+                let mut keys = authorized_keys.write().unwrap();
+                if !keys.contains_key(&remote_fp) {
+                    keys.insert(
+                        remote_fp.clone(),
+                        "auto-discovered (connected via IP)".to_string(),
+                    );
+                    log::info!("Auto-authorized connected peer: {}", remote_fp);
+                }
+            }
+
             if local_fingerprint > remote_fp {
                 let cert_clone = cert.clone();
                 let remote_fp_clone = remote_fp.clone();
                 let tcp_addr = addr; // connect_to_handle already uses the configured port, so addr is fine
-                
+
                 spawn_local(async move {
-                    if let Err(e) = crate::clipboard::transport::connect_clipboard(remote_fp_clone, tcp_addr, cert_clone).await {
+                    if let Err(e) = crate::clipboard::transport::connect_clipboard(
+                        remote_fp_clone,
+                        tcp_addr,
+                        cert_clone,
+                    )
+                    .await
+                    {
                         log::warn!("Clipboard TCP connection to {tcp_addr} failed: {e}");
                     }
                 });
             } else {
-                log::info!("Clipboard TCP connection: waiting for {addr} to initiate (identity tie-breaker)");
+                log::info!(
+                    "Clipboard TCP connection: waiting for {addr} to initiate (identity tie-breaker)"
+                );
             }
         }
         // -------------------------------------------------------
 
         // poll connection for active
         spawn_local(ping_pong(addr, conn.clone(), ping_response.clone()));
-
 
         // receiver
         spawn_local(receive_loop(

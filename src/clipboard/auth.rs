@@ -1,8 +1,8 @@
 use rustls::{
+    Error as RustlsError,
     client::danger::{ServerCertVerified, ServerCertVerifier},
     pki_types::{CertificateDer, ServerName, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
-    Error as RustlsError,
 };
 use std::{
     collections::HashMap,
@@ -33,9 +33,27 @@ impl ClientCertVerifier for LanMouseClientVerifier {
     ) -> Result<ClientCertVerified, RustlsError> {
         let fingerprint = crate::crypto::generate_fingerprint(end_entity.as_ref());
 
-        if crate::crypto::verify_peer_fingerprint(&fingerprint, &self.authorized_keys) {
+        log::debug!(
+            "Clipboard TLS Server Verifier: peer presented fingerprint = {}",
+            fingerprint
+        );
+
+        let authorized =
+            crate::crypto::verify_peer_fingerprint(&fingerprint, &self.authorized_keys);
+
+        if authorized {
+            log::debug!("Clipboard TLS Server Verifier: peer fingerprint IS authorized.");
             Ok(ClientCertVerified::assertion())
         } else {
+            log::warn!(
+                "Clipboard TLS Server Verifier: peer fingerprint {} is NOT in authorized_keys. Keys present: {:?}",
+                fingerprint,
+                self.authorized_keys
+                    .read()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>()
+            );
             Err(RustlsError::General("unauthorized peer".to_string()))
         }
     }
@@ -98,7 +116,9 @@ impl ServerCertVerifier for LanMouseServerVerifier {
         if fingerprint == self.expected_fingerprint {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(RustlsError::General("server fingerprint mismatch".to_string()))
+            Err(RustlsError::General(
+                "server fingerprint mismatch".to_string(),
+            ))
         }
     }
 

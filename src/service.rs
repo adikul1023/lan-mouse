@@ -92,9 +92,18 @@ impl Service {
 
         let authorized_keys = Arc::new(RwLock::new(config.authorized_fingerprints()));
         // listener + connection
-        let listener =
-            LanMouseListener::new(config.port(), cert.clone(), authorized_keys.clone(), client_manager.clone()).await?;
-        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone(), authorized_keys.clone());
+        let listener = LanMouseListener::new(
+            config.port(),
+            cert.clone(),
+            authorized_keys.clone(),
+            client_manager.clone(),
+        )
+        .await?;
+        let conn = LanMouseConnection::new(
+            cert.clone(),
+            client_manager.clone(),
+            authorized_keys.clone(),
+        );
 
         // input capture + emulation
         let capture_backend = config.capture_backend().map(|b| b.into());
@@ -292,7 +301,7 @@ impl Service {
                 } else {
                     self.update_incoming(addr, pos, fingerprint);
                 }
-                
+
                 if let Some(handle) = self.client_manager.get_client(addr) {
                     let _ = crate::clipboard::ACTIVE_CLIPBOARD_PEER.send(Some(handle));
                 }
@@ -301,7 +310,7 @@ impl Service {
                 if let Some(addr) = self.remove_incoming(addr) {
                     self.notify_frontend(FrontendEvent::IncomingDisconnected(addr));
                 }
-                
+
                 if let Some(handle) = self.client_manager.get_client(addr) {
                     crate::clipboard::ACTIVE_CLIPBOARD_PEER.send_if_modified(|current| {
                         if *current == Some(handle) {

@@ -37,11 +37,12 @@ use tokio_util::sync::CancellationToken;
 
 use tokio::sync::watch;
 
-static CLIPBOARD_SESSION_SENDER: std::sync::LazyLock<watch::Sender<Option<Arc<Session<InputCapture>>>>> =
-    std::sync::LazyLock::new(|| {
-        let (tx, _) = watch::channel(None);
-        tx
-    });
+static CLIPBOARD_SESSION_SENDER: std::sync::LazyLock<
+    watch::Sender<Option<Arc<Session<InputCapture>>>>,
+> = std::sync::LazyLock::new(|| {
+    let (tx, _) = watch::channel(None);
+    tx
+});
 
 pub fn get_clipboard_session_rx() -> watch::Receiver<Option<Arc<Session<InputCapture>>>> {
     CLIPBOARD_SESSION_SENDER.subscribe()
@@ -357,7 +358,7 @@ async fn do_capture(
             if let Err(e) = session.close().await {
                 log::warn!("session.close(): {e}");
             }
-            
+
             let _ = CLIPBOARD_SESSION_SENDER.send(None);
 
             // propagate error from capture session

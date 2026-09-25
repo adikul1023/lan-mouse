@@ -1,17 +1,17 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::protocol::{ClipboardMessage, ProtocolError};
+use rustls::ClientConfig;
+use rustls::ServerConfig;
+use rustls::pki_types::ServerName;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use rustls::ClientConfig;
-use rustls::pki_types::ServerName;
-use tokio_rustls::TlsConnector;
-use webrtc_dtls::crypto::Certificate;
+use std::sync::RwLock;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use rustls::ServerConfig;
-use std::collections::HashMap;
-use std::sync::RwLock;
+use tokio_rustls::TlsConnector;
+use webrtc_dtls::crypto::Certificate;
 
 pub const MAX_CLIPBOARD_FRAME_SIZE: u32 = 10 * 1024 * 1024; // 10 MB
 
@@ -20,11 +20,7 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
 ) -> Result<ClipboardMessage, ProtocolError> {
     let length = stream.read_u32().await?;
     if length > MAX_CLIPBOARD_FRAME_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Frame too large",
-        )
-        .into());
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Frame too large").into());
     }
 
     let mut buf = vec![0u8; length as usize];
@@ -69,9 +65,12 @@ pub async fn connect_clipboard(
 
     // 2. Setup TLS Config using existing certificate identity
     let cert_chain = cert.certificate.clone();
-    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
+    let private_key =
+        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
 
-    let verifier = Arc::new(super::auth::LanMouseServerVerifier::new(expected_fingerprint));
+    let verifier = Arc::new(super::auth::LanMouseServerVerifier::new(
+        expected_fingerprint,
+    ));
 
     let config = ClientConfig::builder()
         .dangerous()
@@ -89,14 +88,15 @@ pub async fn connect_clipboard(
     log::info!("Clipboard TLS connection established with {addr}");
 
     // 4. Send Protocol Hello
-    let hello = ClipboardMessage::Hello { protocol_version: 1 };
+    let hello = ClipboardMessage::Hello {
+        protocol_version: 1,
+    };
     write_message(&mut tls_stream, &hello).await?;
 
     let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
 
     // 5. Active receive loop
     loop {
-
         tokio::select! {
             result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
                 match result {
@@ -144,9 +144,12 @@ pub async fn listen_clipboard(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup TLS Server Config
     let cert_chain = cert.certificate.clone();
-    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
+    let private_key =
+        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.private_key.serialized_der.clone().into());
 
-    let verifier = Arc::new(super::auth::LanMouseClientVerifier::new(authorized_keys.clone()));
+    let verifier = Arc::new(super::auth::LanMouseClientVerifier::new(
+        authorized_keys.clone(),
+    ));
 
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
@@ -158,7 +161,6 @@ pub async fn listen_clipboard(
     loop {
         let (tcp_stream, peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
-        let authorized_keys = authorized_keys.clone();
 
         tokio::task::spawn_local(async move {
             match acceptor.accept(tcp_stream).await {
@@ -175,26 +177,40 @@ pub async fn listen_clipboard(
                     }
 
                     let fingerprint = crate::crypto::generate_fingerprint(&peer_certs[0]);
-                    log::info!("Clipboard TLS connection accepted from {peer_addr} (fingerprint: {fingerprint})");
+                    log::info!(
+                        "Clipboard TLS connection accepted from {peer_addr} (fingerprint: {fingerprint})"
+                    );
 
                     // Wait for Hello from Client
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), read_message(&mut tls_stream)).await {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        read_message(&mut tls_stream),
+                    )
+                    .await
+                    {
                         Ok(Ok(ClipboardMessage::Hello { protocol_version })) => {
                             log::info!("Clipboard Hello from {peer_addr} (v{protocol_version})");
                             if protocol_version != 1 {
-                                log::warn!("Unsupported protocol version {protocol_version} from {peer_addr}");
-                                let _ = write_message(&mut tls_stream, &ClipboardMessage::Error { id: 0, code: 400 }).await;
+                                log::warn!(
+                                    "Unsupported protocol version {protocol_version} from {peer_addr}"
+                                );
+                                let _ = write_message(
+                                    &mut tls_stream,
+                                    &ClipboardMessage::Error { id: 0, code: 400 },
+                                )
+                                .await;
                                 return;
                             }
 
-                            let ack = ClipboardMessage::HelloAck { protocol_version: 1 };
+                            let ack = ClipboardMessage::HelloAck {
+                                protocol_version: 1,
+                            };
                             if let Err(e) = write_message(&mut tls_stream, &ack).await {
                                 log::warn!("Failed to send clipboard HelloAck to {peer_addr}: {e}");
                             } else {
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
                                 // Active receive loop
                                 loop {
-
                                     tokio::select! {
                                         result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
                                             match result {
@@ -222,8 +238,12 @@ pub async fn listen_clipboard(
                             }
                         }
                         Ok(Ok(msg)) => log::warn!("Expected Hello, got {:?}", msg),
-                        Ok(Err(e)) => log::warn!("Failed to read clipboard Hello from {peer_addr}: {e}"),
-                        Err(_) => log::warn!("Timed out waiting for clipboard Hello from {peer_addr}"),
+                        Ok(Err(e)) => {
+                            log::warn!("Failed to read clipboard Hello from {peer_addr}: {e}")
+                        }
+                        Err(_) => {
+                            log::warn!("Timed out waiting for clipboard Hello from {peer_addr}")
+                        }
                     }
                 }
                 Err(e) => log::warn!("Clipboard TLS accept failed for {peer_addr}: {e}"),
