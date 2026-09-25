@@ -302,21 +302,22 @@ impl ClipboardTask {
             }
 
             // If we didn't explicitly promote the image (because it's not an image-only HTML),
-            // we should preserve the OS-provided priority for text formats (so apps like VSCode
-            // that want plain text first get it, while browsers that want HTML first get it),
-            // but we demote image types to prevent apps from sending thumbnails instead of text.
+            // we enforce a strict priority: text/plain > image > text/html.
+            // Why? If we prioritize text/html, Windows CF_HTML fragments (which lack <html> wrappers)
+            // will paste as raw HTML strings in many Linux apps (like VSCode).
+            // Prioritizing text/plain guarantees clean text pasting.
             if !image_promoted && mime_types.len() > 1 {
-                let mut new_mimes = Vec::new();
-                let mut img_mimes = Vec::new();
-                for m in mime_types.drain(..) {
-                    if m.starts_with("image/") {
-                        img_mimes.push(m);
+                mime_types.sort_by_key(|m| {
+                    if m == "text/plain" {
+                        0
+                    } else if m.starts_with("image/") {
+                        1
+                    } else if m == "text/html" {
+                        2
                     } else {
-                        new_mimes.push(m);
+                        3
                     }
-                }
-                new_mimes.extend(img_mimes);
-                mime_types = new_mimes;
+                });
             }
         }
         mime_types
