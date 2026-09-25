@@ -96,39 +96,39 @@ pub async fn connect_clipboard(
     let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
     let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
 
-    // 5. Active receive loop
+    let (mut rx, mut tx) = tokio::io::split(tls_stream);
+
+    // 5. Active receive and write loops
+    let write_task = tokio::task::spawn_local(async move {
+        while let Ok(msg) = outgoing_rx.recv().await {
+            if let Err(e) = write_message(&mut tx, &msg).await {
+                log::warn!("Failed to write clipboard message to {addr}: {e}");
+                break;
+            }
+        }
+    });
+
     loop {
-        tokio::select! {
-            result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
-                match result {
-                    Ok(Ok(msg)) => {
-                        log::info!("Clipboard received from {addr}: {:?}", msg);
-                        if let ClipboardMessage::Hello { protocol_version } = msg {
-                            if protocol_version != 1 {
-                                log::warn!("Unsupported protocol version {protocol_version} from {addr}");
-                                let _ = write_message(&mut tls_stream, &ClipboardMessage::Error { id: 0, code: 400 }).await;
-                                break;
-                            }
-                            let ack = ClipboardMessage::HelloAck { protocol_version: 1 };
-                            let _ = write_message(&mut tls_stream, &ack).await;
-                        } else {
-                            let _ = super::CLIPBOARD_INCOMING.send(msg);
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        log::warn!("Clipboard connection to {addr} closed: {e}");
+        match read_message(&mut rx).await {
+            Ok(msg) => {
+                if let ClipboardMessage::Data { id, data } = &msg {
+                    log::info!("Clipboard received Data for id {id} (len: {}) from {addr}", data.len());
+                } else {
+                    log::info!("Clipboard received from {addr}: {:?}", msg);
+                }
+                if let ClipboardMessage::Hello { protocol_version } = msg {
+                    if protocol_version != 1 {
+                        log::warn!("Unsupported protocol version {protocol_version} from {addr}");
                         break;
                     }
-                    Err(_) => {
-                        continue;
-                    }
+                } else {
+                    let _ = super::CLIPBOARD_INCOMING.send(msg);
                 }
             }
-            Ok(msg) = outgoing_rx.recv() => {
-                if let Err(e) = write_message(&mut tls_stream, &msg).await {
-                    log::warn!("Failed to write clipboard message to {addr}: {e}");
-                    break;
-                }
+            Err(e) => {
+                log::warn!("Clipboard connection to {addr} closed: {e}");
+                write_task.abort();
+                break;
             }
         }
     }
@@ -209,27 +209,31 @@ pub async fn listen_clipboard(
                             } else {
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
                                 let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
-                                // Active receive loop
-                                loop {
-                                    tokio::select! {
-                                        result = tokio::time::timeout(std::time::Duration::from_secs(2), read_message(&mut tls_stream)) => {
-                                            match result {
-                                                Ok(Ok(msg)) => {
-                                                    log::info!("Clipboard received from {peer_addr}: {:?}", msg);
-                                                    let _ = super::CLIPBOARD_INCOMING.send(msg);
-                                                }
-                                                Ok(Err(e)) => {
-                                                    log::warn!("Clipboard connection to {peer_addr} closed: {e}");
-                                                    break;
-                                                }
-                                                Err(_) => continue,
-                                            }
+                                let (mut rx, mut tx) = tokio::io::split(tls_stream);
+                                // Active receive and write loops
+                                let write_task = tokio::task::spawn_local(async move {
+                                    while let Ok(msg) = outgoing_rx.recv().await {
+                                        if let Err(e) = write_message(&mut tx, &msg).await {
+                                            log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
+                                            break;
                                         }
-                                        Ok(msg) = outgoing_rx.recv() => {
-                                            if let Err(e) = write_message(&mut tls_stream, &msg).await {
-                                                log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
-                                                break;
+                                    }
+                                });
+
+                                loop {
+                                    match read_message(&mut rx).await {
+                                        Ok(msg) => {
+                                            if let ClipboardMessage::Data { id, data } = &msg {
+                                                log::info!("Clipboard received Data for id {id} (len: {}) from {peer_addr}", data.len());
+                                            } else {
+                                                log::info!("Clipboard received from {peer_addr}: {:?}", msg);
                                             }
+                                            let _ = super::CLIPBOARD_INCOMING.send(msg);
+                                        }
+                                        Err(e) => {
+                                            log::warn!("Clipboard connection to {peer_addr} closed: {e}");
+                                            write_task.abort();
+                                            break;
                                         }
                                     }
                                 }
