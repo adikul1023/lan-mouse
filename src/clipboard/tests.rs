@@ -60,15 +60,17 @@ impl ClipboardPortal for MockClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        mime: &'a str,
-        data: Vec<u8>,
+        items: Vec<super::task::ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            self.events.lock().unwrap().push(format!(
-                "selection_write({}, {} bytes)",
-                mime,
-                data.len()
-            ));
+            let mut evs = self.events.lock().unwrap();
+            for item in items {
+                evs.push(format!(
+                    "selection_write({}, {} bytes)",
+                    item.mime_type,
+                    item.data.len()
+                ));
+            }
             Ok(())
         })
     }
@@ -208,9 +210,9 @@ async fn test_clipboard_state_machine() {
     transfer_tx.send(()).await.unwrap();
     let msg = outgoing_rx.recv().await.unwrap();
     match msg {
-        ClipboardMessage::Request { id, mime_type } => {
+        ClipboardMessage::Request { id, mime_types } => {
             assert_eq!(id, remote_offer_id);
-            assert_eq!(mime_type, "text/plain");
+            assert_eq!(mime_types[0], "text/plain");
         }
         _ => panic!("Expected Request"),
     }
@@ -234,7 +236,7 @@ async fn test_clipboard_state_machine() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Request {
             id: remote_offer_id - 1, // Stale ID
-            mime_type: "text/plain".to_string(),
+            mime_types: vec!["text/plain".to_string()],
         })
         .unwrap();
 
@@ -300,9 +302,9 @@ async fn test_eager_fetch() {
     // Because eager_fetch is true, the task should immediately send a Request
     let msg = outgoing_rx.recv().await.unwrap();
     match msg {
-        ClipboardMessage::Request { id, mime_type } => {
+        ClipboardMessage::Request { id, mime_types } => {
             assert_eq!(id, 1);
-            assert_eq!(mime_type, "text/plain");
+            assert_eq!(mime_types[0], "text/plain");
         }
         _ => panic!("Expected Request"),
     }
@@ -355,7 +357,7 @@ async fn test_failure_isolation_and_stress() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Request {
             id: current_offer_id,
-            mime_type: "text/plain".to_string(),
+            mime_types: vec!["text/plain".to_string()],
         })
         .unwrap();
     // Wait for the task to process
