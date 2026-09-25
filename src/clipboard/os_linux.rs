@@ -206,15 +206,29 @@ impl ClipboardPortal for WlClipboardPortal {
                             continue;
                         }
                     }
-                    let mime = if item.mime_type == "text/plain" {
-                        wl_clipboard_rs::copy::MimeType::Text
+                    if item.mime_type == "text/plain" {
+                        let aliases = [
+                            "UTF8_STRING",
+                            "STRING",
+                            "TEXT",
+                            "text/plain;charset=utf-8",
+                        ];
+                        for alias in aliases {
+                            sources.push(wl_clipboard_rs::copy::MimeSource {
+                                mime_type: wl_clipboard_rs::copy::MimeType::Specific(alias.to_string()),
+                                source: wl_clipboard_rs::copy::Source::Bytes(item.data.clone().into()),
+                            });
+                        }
+                        sources.push(wl_clipboard_rs::copy::MimeSource {
+                            mime_type: wl_clipboard_rs::copy::MimeType::Text,
+                            source: wl_clipboard_rs::copy::Source::Bytes(item.data.into()),
+                        });
                     } else {
-                        wl_clipboard_rs::copy::MimeType::Specific(item.mime_type)
-                    };
-                    sources.push(wl_clipboard_rs::copy::MimeSource {
-                        mime_type: mime,
-                        source: wl_clipboard_rs::copy::Source::Bytes(item.data.into()),
-                    });
+                        sources.push(wl_clipboard_rs::copy::MimeSource {
+                            mime_type: wl_clipboard_rs::copy::MimeType::Specific(item.mime_type),
+                            source: wl_clipboard_rs::copy::Source::Bytes(item.data.into()),
+                        });
+                    }
                 }
 
                 if sources.is_empty() {
