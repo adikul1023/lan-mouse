@@ -13,7 +13,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::TlsConnector;
 use webrtc_dtls::crypto::Certificate;
 
-pub const MAX_CLIPBOARD_FRAME_SIZE: u32 = 10 * 1024 * 1024; // 10 MB
+pub const MAX_CLIPBOARD_FRAME_SIZE: u32 = 100 * 1024 * 1024; // 100 MB
 
 pub async fn read_message<R: AsyncReadExt + Unpin>(
     stream: &mut R,

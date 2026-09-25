@@ -252,7 +252,7 @@ impl ClipboardPortal for WlClipboardPortal {
                 }
                 if data.len() + n > max_payload {
                     let _ = child.kill().await;
-                    return Err("Clipboard data exceeds 10MB limit".to_string());
+                    return Err(format!("Clipboard data exceeds {}MB limit", crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)));
                 }
                 data.extend_from_slice(&buf[..n]);
             }

@@ -356,7 +356,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
             // Apply limit (account for 13 bytes framing overhead)
             let max_payload = (crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE - 13) as usize;
             if data.len() > max_payload {
-                return Err("Clipboard data exceeds 10MB limit".to_string());
+                return Err(format!("Clipboard data exceeds {}MB limit", crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)));
             }
             log::info!(
                 "[DEBUG WINDOWS] text length successfully read: {}",
