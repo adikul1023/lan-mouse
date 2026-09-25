@@ -25,14 +25,32 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
         let mut discard_buf = [0u8; 8192];
         while remaining > 0 {
             let to_read = std::cmp::min(remaining, discard_buf.len());
-            stream.read_exact(&mut discard_buf[..to_read]).await?;
-            remaining -= to_read;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                stream.read(&mut discard_buf[..to_read])
+            ).await {
+                Ok(Ok(0)) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF during discard"))),
+                Ok(Ok(n)) => remaining -= n,
+                Ok(Err(e)) => return Err(ProtocolError::Io(e)),
+                Err(_) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "Transfer stalled during discard"))),
+            }
         }
         return Err(ProtocolError::FrameTooLarge(length));
     }
 
     let mut buf = vec![0u8; length as usize];
-    stream.read_exact(&mut buf).await?;
+    let mut read_so_far = 0;
+    while read_so_far < length as usize {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read(&mut buf[read_so_far..])
+        ).await {
+            Ok(Ok(0)) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF during transfer"))),
+            Ok(Ok(n)) => read_so_far += n,
+            Ok(Err(e)) => return Err(ProtocolError::Io(e)),
+            Err(_) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "Transfer stalled"))),
+        }
+    }
 
     let mut cursor = Cursor::new(buf);
     ClipboardMessage::decode(&mut cursor)
@@ -131,14 +149,35 @@ pub async fn connect_clipboard(
 
     let (mut rx, mut tx) = tokio::io::split(tls_stream);
 
+    let received_offers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+    let received_requests = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+
     // 5. Active receive and write loops
-    let write_task = tokio::task::spawn_local(async move {
-        while let Ok(msg) = outgoing_rx.recv().await {
-            if let Err(e) = write_message(&mut tx, &msg, session_version).await {
-                log::warn!("Failed to write clipboard message to {addr}: {e}");
-                match e {
-                    ProtocolError::FrameTooLarge(_) => continue,
-                    _ => break,
+    let write_task = tokio::task::spawn_local({
+        let received_offers = received_offers.clone();
+        let received_requests = received_requests.clone();
+        async move {
+            while let Ok(msg) = outgoing_rx.recv().await {
+                match &msg {
+                    ClipboardMessage::Request { id, .. } => {
+                        if !received_offers.lock().unwrap().contains(id) {
+                            continue;
+                        }
+                    }
+                    ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
+                        if !received_requests.lock().unwrap().contains(id) {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+
+                if let Err(e) = write_message(&mut tx, &msg, session_version).await {
+                    log::warn!("Failed to write clipboard message to {addr}: {e}");
+                    match e {
+                        ProtocolError::FrameTooLarge(_) => continue,
+                        _ => break,
+                    }
                 }
             }
         }
@@ -147,6 +186,11 @@ pub async fn connect_clipboard(
     loop {
         match read_message(&mut rx).await {
             Ok(msg) => {
+                if let ClipboardMessage::Offer { id, .. } = &msg {
+                    received_offers.lock().unwrap().insert(*id);
+                } else if let ClipboardMessage::Request { id, .. } = &msg {
+                    received_requests.lock().unwrap().insert(*id);
+                }
                 if let ClipboardMessage::Data { id, data, .. } = &msg {
                     log::info!(
                         "Clipboard received Data for id {id} (len: {}) from {addr}",
@@ -251,18 +295,40 @@ pub async fn listen_clipboard(
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
                                 let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
                                 let (mut rx, mut tx) = tokio::io::split(tls_stream);
+                                
+                                let received_offers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+                                let received_requests = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+
                                 // Active receive and write loops
-                                let write_task = tokio::task::spawn_local(async move {
-                                    while let Ok(msg) = outgoing_rx.recv().await {
-                                        if let Err(e) =
-                                            write_message(&mut tx, &msg, session_version).await
-                                        {
-                                            log::warn!(
-                                                "Failed to write clipboard message to {peer_addr}: {e}"
-                                            );
-                                            match e {
-                                                ProtocolError::FrameTooLarge(_) => continue,
-                                                _ => break,
+                                let write_task = tokio::task::spawn_local({
+                                    let received_offers = received_offers.clone();
+                                    let received_requests = received_requests.clone();
+                                    async move {
+                                        while let Ok(msg) = outgoing_rx.recv().await {
+                                            match &msg {
+                                                ClipboardMessage::Request { id, .. } => {
+                                                    if !received_offers.lock().unwrap().contains(id) {
+                                                        continue;
+                                                    }
+                                                }
+                                                ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
+                                                    if !received_requests.lock().unwrap().contains(id) {
+                                                        continue;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+
+                                            if let Err(e) =
+                                                write_message(&mut tx, &msg, session_version).await
+                                            {
+                                                log::warn!(
+                                                    "Failed to write clipboard message to {peer_addr}: {e}"
+                                                );
+                                                match e {
+                                                    ProtocolError::FrameTooLarge(_) => continue,
+                                                    _ => break,
+                                                }
                                             }
                                         }
                                     }
@@ -271,6 +337,11 @@ pub async fn listen_clipboard(
                                 loop {
                                     match read_message(&mut rx).await {
                                         Ok(msg) => {
+                                            if let ClipboardMessage::Offer { id, .. } = &msg {
+                                                received_offers.lock().unwrap().insert(*id);
+                                            } else if let ClipboardMessage::Request { id, .. } = &msg {
+                                                received_requests.lock().unwrap().insert(*id);
+                                            }
                                             if let ClipboardMessage::Data { id, data, .. } = &msg {
                                                 log::info!(
                                                     "Clipboard received Data for id {id} (len: {}) from {peer_addr}",
