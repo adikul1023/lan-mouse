@@ -1,7 +1,7 @@
 use ashpd::desktop::Session;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 
 use crate::clipboard::task::{ClipboardPortal, ClipboardTask};
 
@@ -211,7 +211,10 @@ impl ClipboardPortal for WlClipboardPortal {
                     } else {
                         wl_clipboard_rs::copy::MimeType::Specific(item.mime_type)
                     };
-                    sources.push((mime, wl_clipboard_rs::copy::Source::Bytes(item.data.into())));
+                    sources.push(wl_clipboard_rs::copy::MimeSource {
+                        mime_type: mime,
+                        source: wl_clipboard_rs::copy::Source::Bytes(item.data.into()),
+                    });
                 }
 
                 if sources.is_empty() {
