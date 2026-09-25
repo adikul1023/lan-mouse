@@ -90,27 +90,7 @@ impl ClipboardPortal for AshpdClipboardPortal {
         &'a self,
         _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        let clipboard = self.clipboard.clone();
-        Box::pin(async move {
-            let data = match clipboard.read_selection().await {
-                Ok(stream) => {
-                    // Collect up to max limit + 1
-                    let max_bytes = crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE as usize;
-                    let mut data = Vec::new();
-                    // We need to consume the Stream returned by read_selection
-                    let mut stream = stream;
-                    while let Some(chunk) = stream.next().await {
-                        data.extend_from_slice(&chunk);
-                        if data.len() > max_bytes {
-                            return Err("Clipboard data exceeds 10MB limit".to_string());
-                        }
-                    }
-                    data
-                }
-                Err(e) => return Err(e.to_string()),
-            };
-            Ok(data)
-        })
+        Box::pin(async move { Ok(Vec::new()) })
     }
 
     fn set_selection<'a>(
