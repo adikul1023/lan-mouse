@@ -51,3 +51,20 @@ pub fn init_clipboard_task() {
         os_windows::init_clipboard_task();
     }
 }
+
+pub fn validate_image_dimensions(data: &[u8]) -> Result<(), String> {
+    if data.len() < 24 {
+        return Ok(()); // let actual image parser fail
+    }
+    if &data[0..8] == b"\x89PNG\r\n\x1a\n" {
+        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
+        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as usize;
+        if width > 8192 || height > 8192 {
+            return Err(format!("Image dimensions exceed 8192x8192 ({}x{})", width, height));
+        }
+        if width.checked_mul(height).and_then(|a| a.checked_mul(4)).unwrap_or(usize::MAX) > 256 * 1024 * 1024 {
+            return Err("Decoded image size exceeds 256 MiB limit".to_string());
+        }
+    }
+    Ok(())
+}

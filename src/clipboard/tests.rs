@@ -462,3 +462,20 @@ async fn test_failure_isolation_and_stress() {
 
     task_handle.abort();
 }
+
+#[test]
+fn test_validate_image_dimensions() {
+    let mut valid_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0DIHDR\x00\x00\x00\x64\x00\x00\x00\x64\x08\x06\x00\x00\x00".to_vec();
+    assert!(super::validate_image_dimensions(&valid_png).is_ok());
+
+    let mut huge_png = valid_png.clone();
+    // width: 10000 -> 0x2710
+    huge_png[16..20].copy_from_slice(&[0x00, 0x00, 0x27, 0x10]);
+    assert!(super::validate_image_dimensions(&huge_png).is_err());
+
+    let mut huge_decoded = valid_png.clone();
+    // width: 8193 (0x2001), height: 8193 (0x2001) -> > 8192 bounds
+    huge_decoded[16..20].copy_from_slice(&[0x00, 0x00, 0x20, 0x01]);
+    huge_decoded[20..24].copy_from_slice(&[0x00, 0x00, 0x20, 0x01]);
+    assert!(super::validate_image_dimensions(&huge_decoded).is_err());
+}

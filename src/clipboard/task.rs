@@ -35,7 +35,12 @@ pub trait ClipboardPortal: Send + Sync {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>>;
 
     fn get_supported_mime_types(&self) -> Vec<String> {
-        vec!["text/plain".to_string(), "text/html".to_string()]
+        vec![
+            "text/plain".to_string(),
+            "text/html".to_string(),
+            "image/png".to_string(),
+            "image/jpeg".to_string(),
+        ]
     }
 
     /// Return true if the OS integration expects the network to eagerly fetch data immediately upon receiving an Offer.
@@ -144,22 +149,26 @@ impl ClipboardTask {
                 );
                 self.current_offer_id = id;
 
-                // Deterministic selection: prefer HTML, fallback to text/plain
+                // Preserve source clipboard semantics: iterate over the offered types in order
+                // and pick the first one that we locally support.
                 let supported = portal.get_supported_mime_types();
-                let selected_mime = if mime_types.contains(&"text/html".to_string())
-                    && supported.contains(&"text/html".to_string())
-                {
-                    "text/html"
-                } else if mime_types.contains(&"text/plain".to_string())
-                    && supported.contains(&"text/plain".to_string())
-                {
-                    "text/plain"
-                } else {
-                    log::warn!(
-                        "[DEBUG TASK] No supported MIME types offered: {:?}",
-                        mime_types
-                    );
-                    return;
+                let mut selected_mime = None;
+                for mime in &mime_types {
+                    if supported.contains(mime) {
+                        selected_mime = Some(mime.as_str());
+                        break;
+                    }
+                }
+
+                let selected_mime = match selected_mime {
+                    Some(m) => m,
+                    None => {
+                        log::warn!(
+                            "[DEBUG TASK] No supported MIME types offered: {:?}",
+                            mime_types
+                        );
+                        return;
+                    }
                 };
 
                 if let Err(e) = portal.set_selection(selected_mime).await {

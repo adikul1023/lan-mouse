@@ -79,6 +79,7 @@ ashpd = { version = "0.13.9", default-features = false, features = ["clipboard",
 
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = { version = "5.4.1", features = ["monitor"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg"] }
 
 [features]
 default = [

@@ -201,6 +201,9 @@ impl ClipboardPortal for WlClipboardPortal {
         let child_arc = self.current_copy_child.clone();
         let mime_str = mime.to_string();
         Box::pin(async move {
+            if mime_str.starts_with("image/") {
+                super::validate_image_dimensions(&data)?;
+            }
             let mut child = tokio::process::Command::new("wl-copy")
                 .arg("--type")
                 .arg(&mime_str)
@@ -255,6 +258,10 @@ impl ClipboardPortal for WlClipboardPortal {
             }
 
             let _ = child.wait().await;
+
+            if mime_str.starts_with("image/") {
+                super::validate_image_dimensions(&data)?;
+            }
             Ok(data)
         })
     }

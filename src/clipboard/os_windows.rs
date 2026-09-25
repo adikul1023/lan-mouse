@@ -238,6 +238,44 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
+            } else if mime.starts_with("image/") {
+                if let Ok(mut supp) = self.suppressor.lock() {
+                    supp.prepare_write();
+                }
+                let data = data.clone();
+                let mime_str = mime.to_string();
+                
+                tokio::task::spawn_blocking(move || {
+                    let png_fmt = clipboard_win::register_format("PNG");
+                    
+                    // Always try to write the modern PNG format if we received a PNG/JPEG
+                    if let Some(fmt) = png_fmt {
+                        // If it's already a PNG, just write it
+                        if mime_str == "image/png" {
+                            let _ = clipboard_win::set_clipboard(
+                                clipboard_win::formats::RawData(fmt.get()),
+                                &data,
+                            );
+                        }
+                    }
+
+                    // For legacy app compatibility, decode the image and write it as CF_DIB (Bitmap).
+                    // The clipboard-win `formats::Bitmap` expects a standard .bmp file layout 
+                    // and handles the CF_DIB conversion internally.
+                    if let Ok(img) = image::load_from_memory(&data) {
+                        let mut bmp_data = std::io::Cursor::new(Vec::new());
+                        if img.write_to(&mut bmp_data, image::ImageFormat::Bmp).is_ok() {
+                            let _ = clipboard_win::set_clipboard(
+                                clipboard_win::formats::Bitmap,
+                                bmp_data.into_inner(),
+                            );
+                        }
+                    }
+                    Ok::<(), String>(())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
             } else {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
@@ -280,6 +318,37 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?
+            } else if mime == "image/png" || mime == "image/jpeg" {
+                tokio::task::spawn_blocking(move || {
+                    let png_fmt = clipboard_win::register_format("PNG");
+                    
+                    // Prefer reading native PNG directly if available
+                    if let Some(fmt) = png_fmt {
+                        if clipboard_win::is_format_avail(fmt.get()) {
+                            if let Ok(data) = clipboard_win::get_clipboard::<Vec<u8>, _>(
+                                clipboard_win::formats::RawData(fmt.get()),
+                            ) {
+                                return Ok(data);
+                            }
+                        }
+                    }
+                    
+                    // Fallback: Read as Bitmap (CF_DIB) and encode to PNG
+                    let bmp_data: Vec<u8> = clipboard_win::get_clipboard(clipboard_win::formats::Bitmap)
+                        .map_err(|e| format!("Failed to read CF_DIB: {}", e))?;
+                        
+                    let img = image::load_from_memory_with_format(&bmp_data, image::ImageFormat::Bmp)
+                        .map_err(|e| format!("Failed to parse CF_DIB as BMP: {}", e))?;
+                        
+                    let mut png_data = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut png_data, image::ImageFormat::Png)
+                        .map_err(|e| format!("Failed to encode image to PNG: {}", e))?;
+                        
+                    Ok::<Vec<u8>, String>(png_data.into_inner())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?
             } else {
                 return Err(format!("Unsupported MIME type: {}", mime));
             };
@@ -315,18 +384,25 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 let mut avail = Vec::new();
                 let _clip =
                     clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
-                if let Some(html_fmt) = clipboard_win::register_format("HTML Format") {
-                    if clipboard_win::is_format_avail(html_fmt.get()) {
-                        avail.push("text/html".to_string());
+                let html_fmt = clipboard_win::register_format("HTML Format");
+                let png_fmt = clipboard_win::register_format("PNG");
+
+                for format in clipboard_win::EnumFormats::new() {
+                    if Some(format) == html_fmt.map(|f| f.get()) {
+                        if !avail.contains(&"text/html".to_string()) {
+                            avail.push("text/html".to_string());
+                        }
+                    } else if format == 13 || format == 1 { // CF_UNICODETEXT or CF_TEXT
+                        if !avail.contains(&"text/plain".to_string()) {
+                            avail.push("text/plain".to_string());
+                        }
+                    } else if Some(format) == png_fmt.map(|f| f.get()) || format == 17 || format == 8 { // PNG, CF_DIBV5, CF_DIB
+                        if !avail.contains(&"image/png".to_string()) {
+                            avail.push("image/png".to_string());
+                        }
                     }
                 }
-                if clipboard_win::is_format_avail(13) {
-                    // CF_UNICODETEXT
-                    avail.push("text/plain".to_string());
-                } else if clipboard_win::is_format_avail(1) {
-                    // CF_TEXT
-                    avail.push("text/plain".to_string());
-                }
+                
                 Ok::<Vec<String>, String>(avail)
             })
             .await
