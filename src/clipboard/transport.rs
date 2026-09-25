@@ -27,12 +27,24 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
             let to_read = std::cmp::min(remaining, discard_buf.len());
             match tokio::time::timeout(
                 std::time::Duration::from_secs(2),
-                stream.read(&mut discard_buf[..to_read])
-            ).await {
-                Ok(Ok(0)) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF during discard"))),
+                stream.read(&mut discard_buf[..to_read]),
+            )
+            .await
+            {
+                Ok(Ok(0)) => {
+                    return Err(ProtocolError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "EOF during discard",
+                    )));
+                }
                 Ok(Ok(n)) => remaining -= n,
                 Ok(Err(e)) => return Err(ProtocolError::Io(e)),
-                Err(_) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "Transfer stalled during discard"))),
+                Err(_) => {
+                    return Err(ProtocolError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Transfer stalled during discard",
+                    )));
+                }
             }
         }
         return Err(ProtocolError::FrameTooLarge(length));
@@ -43,12 +55,24 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
     while read_so_far < length as usize {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            stream.read(&mut buf[read_so_far..])
-        ).await {
-            Ok(Ok(0)) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF during transfer"))),
+            stream.read(&mut buf[read_so_far..]),
+        )
+        .await
+        {
+            Ok(Ok(0)) => {
+                return Err(ProtocolError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "EOF during transfer",
+                )));
+            }
             Ok(Ok(n)) => read_so_far += n,
             Ok(Err(e)) => return Err(ProtocolError::Io(e)),
-            Err(_) => return Err(ProtocolError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "Transfer stalled"))),
+            Err(_) => {
+                return Err(ProtocolError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Transfer stalled",
+                )));
+            }
         }
     }
 
@@ -149,8 +173,12 @@ pub async fn connect_clipboard(
 
     let (mut rx, mut tx) = tokio::io::split(tls_stream);
 
-    let received_offers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
-    let received_requests = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+    let received_offers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<
+        u64,
+    >::new()));
+    let received_requests = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashSet::<u64>::new(),
+    ));
 
     // 5. Active receive and write loops
     let write_task = tokio::task::spawn_local({
@@ -295,9 +323,13 @@ pub async fn listen_clipboard(
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
                                 let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
                                 let (mut rx, mut tx) = tokio::io::split(tls_stream);
-                                
-                                let received_offers = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
-                                let received_requests = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+
+                                let received_offers = std::sync::Arc::new(std::sync::Mutex::new(
+                                    std::collections::HashSet::<u64>::new(),
+                                ));
+                                let received_requests = std::sync::Arc::new(std::sync::Mutex::new(
+                                    std::collections::HashSet::<u64>::new(),
+                                ));
 
                                 // Active receive and write loops
                                 let write_task = tokio::task::spawn_local({
@@ -307,12 +339,18 @@ pub async fn listen_clipboard(
                                         while let Ok(msg) = outgoing_rx.recv().await {
                                             match &msg {
                                                 ClipboardMessage::Request { id, .. } => {
-                                                    if !received_offers.lock().unwrap().contains(id) {
+                                                    if !received_offers.lock().unwrap().contains(id)
+                                                    {
                                                         continue;
                                                     }
                                                 }
-                                                ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
-                                                    if !received_requests.lock().unwrap().contains(id) {
+                                                ClipboardMessage::Data { id, .. }
+                                                | ClipboardMessage::Error { id, .. } => {
+                                                    if !received_requests
+                                                        .lock()
+                                                        .unwrap()
+                                                        .contains(id)
+                                                    {
                                                         continue;
                                                     }
                                                 }
@@ -339,7 +377,9 @@ pub async fn listen_clipboard(
                                         Ok(msg) => {
                                             if let ClipboardMessage::Offer { id, .. } = &msg {
                                                 received_offers.lock().unwrap().insert(*id);
-                                            } else if let ClipboardMessage::Request { id, .. } = &msg {
+                                            } else if let ClipboardMessage::Request { id, .. } =
+                                                &msg
+                                            {
                                                 received_requests.lock().unwrap().insert(*id);
                                             }
                                             if let ClipboardMessage::Data { id, data, .. } = &msg {
@@ -508,7 +548,9 @@ mod tests {
 
         // V1 Data serialisation
         let mut v1_stream = Vec::new();
-        write_message(&mut v1_stream, &msg_data_v1, 1).await.unwrap();
+        write_message(&mut v1_stream, &msg_data_v1, 1)
+            .await
+            .unwrap();
         let mut cursor = Cursor::new(&v1_stream);
         let decoded_data = read_message(&mut cursor).await.unwrap();
 

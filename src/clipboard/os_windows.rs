@@ -244,10 +244,10 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 }
                 let data = data.clone();
                 let mime_str = mime.to_string();
-                
+
                 tokio::task::spawn_blocking(move || {
                     let png_fmt = clipboard_win::register_format("PNG");
-                    
+
                     // Always try to write the modern PNG format if we received a PNG/JPEG
                     if let Some(fmt) = png_fmt {
                         // If it's already a PNG, just write it
@@ -260,7 +260,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
                     }
 
                     // For legacy app compatibility, decode the image and write it as CF_DIB (Bitmap).
-                    // The clipboard-win `formats::Bitmap` expects a standard .bmp file layout 
+                    // The clipboard-win `formats::Bitmap` expects a standard .bmp file layout
                     // and handles the CF_DIB conversion internally.
                     if let Ok(img) = image::load_from_memory(&data) {
                         let mut bmp_data = std::io::Cursor::new(Vec::new());
@@ -321,7 +321,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
             } else if mime == "image/png" || mime == "image/jpeg" {
                 tokio::task::spawn_blocking(move || {
                     let png_fmt = clipboard_win::register_format("PNG");
-                    
+
                     // Prefer reading native PNG directly if available
                     if let Some(fmt) = png_fmt {
                         if clipboard_win::is_format_avail(fmt.get()) {
@@ -332,18 +332,20 @@ impl ClipboardPortal for WindowsClipboardPortal {
                             }
                         }
                     }
-                    
+
                     // Fallback: Read as Bitmap (CF_DIB) and encode to PNG
-                    let bmp_data: Vec<u8> = clipboard_win::get_clipboard(clipboard_win::formats::Bitmap)
-                        .map_err(|e| format!("Failed to read CF_DIB: {}", e))?;
-                        
-                    let img = image::load_from_memory_with_format(&bmp_data, image::ImageFormat::Bmp)
-                        .map_err(|e| format!("Failed to parse CF_DIB as BMP: {}", e))?;
-                        
+                    let bmp_data: Vec<u8> =
+                        clipboard_win::get_clipboard(clipboard_win::formats::Bitmap)
+                            .map_err(|e| format!("Failed to read CF_DIB: {}", e))?;
+
+                    let img =
+                        image::load_from_memory_with_format(&bmp_data, image::ImageFormat::Bmp)
+                            .map_err(|e| format!("Failed to parse CF_DIB as BMP: {}", e))?;
+
                     let mut png_data = std::io::Cursor::new(Vec::new());
                     img.write_to(&mut png_data, image::ImageFormat::Png)
                         .map_err(|e| format!("Failed to encode image to PNG: {}", e))?;
-                        
+
                     Ok::<Vec<u8>, String>(png_data.into_inner())
                 })
                 .await
@@ -356,7 +358,10 @@ impl ClipboardPortal for WindowsClipboardPortal {
             // Apply limit (account for 13 bytes framing overhead)
             let max_payload = (crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE - 13) as usize;
             if data.len() > max_payload {
-                return Err(format!("Clipboard data exceeds {}MB limit", crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)));
+                return Err(format!(
+                    "Clipboard data exceeds {}MB limit",
+                    crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)
+                ));
             }
             log::info!(
                 "[DEBUG WINDOWS] text length successfully read: {}",
@@ -392,17 +397,22 @@ impl ClipboardPortal for WindowsClipboardPortal {
                         if !avail.contains(&"text/html".to_string()) {
                             avail.push("text/html".to_string());
                         }
-                    } else if format == 13 || format == 1 { // CF_UNICODETEXT or CF_TEXT
+                    } else if format == 13 || format == 1 {
+                        // CF_UNICODETEXT or CF_TEXT
                         if !avail.contains(&"text/plain".to_string()) {
                             avail.push("text/plain".to_string());
                         }
-                    } else if Some(format) == png_fmt.map(|f| f.get()) || format == 17 || format == 8 { // PNG, CF_DIBV5, CF_DIB
+                    } else if Some(format) == png_fmt.map(|f| f.get())
+                        || format == 17
+                        || format == 8
+                    {
+                        // PNG, CF_DIBV5, CF_DIB
                         if !avail.contains(&"image/png".to_string()) {
                             avail.push("image/png".to_string());
                         }
                     }
                 }
-                
+
                 Ok::<Vec<String>, String>(avail)
             })
             .await
@@ -478,9 +488,13 @@ mod tests {
         let malformed = b"Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\n";
         let result = decode_cf_html(malformed);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Malformed CF_HTML or invalid fragment offsets");
-        
-        let invalid_offsets = b"Version:0.9\r\nStartFragment:0000000100\r\nEndFragment:0000000050\r\n";
+        assert_eq!(
+            result.unwrap_err(),
+            "Malformed CF_HTML or invalid fragment offsets"
+        );
+
+        let invalid_offsets =
+            b"Version:0.9\r\nStartFragment:0000000100\r\nEndFragment:0000000050\r\n";
         let result = decode_cf_html(invalid_offsets);
         assert!(result.is_err());
     }
