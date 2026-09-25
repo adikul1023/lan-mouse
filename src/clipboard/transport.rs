@@ -20,7 +20,7 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
 ) -> Result<ClipboardMessage, ProtocolError> {
     let length = stream.read_u32().await?;
     if length > MAX_CLIPBOARD_FRAME_SIZE {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Frame too large").into());
+        return Err(ProtocolError::FrameTooLarge(length));
     }
 
     let mut buf = vec![0u8; length as usize];
@@ -39,11 +39,7 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
 
     let length = buf.len() as u32;
     if length > MAX_CLIPBOARD_FRAME_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Frame too large for write",
-        )
-        .into());
+        return Err(ProtocolError::FrameTooLarge(length));
     }
 
     stream.write_u32(length).await?;
@@ -112,7 +108,10 @@ pub async fn connect_clipboard(
         match read_message(&mut rx).await {
             Ok(msg) => {
                 if let ClipboardMessage::Data { id, data } = &msg {
-                    log::info!("Clipboard received Data for id {id} (len: {}) from {addr}", data.len());
+                    log::info!(
+                        "Clipboard received Data for id {id} (len: {}) from {addr}",
+                        data.len()
+                    );
                 } else {
                     log::info!("Clipboard received from {addr}: {:?}", msg);
                 }
@@ -124,6 +123,17 @@ pub async fn connect_clipboard(
                 } else {
                     let _ = super::CLIPBOARD_INCOMING.send(msg);
                 }
+            }
+            Err(ProtocolError::FrameTooLarge(len)) => {
+                log::error!(
+                    "Clipboard frame too large ({} bytes). Sending 413 Error to {addr} and dropping.",
+                    len
+                );
+                let _ =
+                    super::CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id: 0, code: 413 });
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                write_task.abort();
+                break;
             }
             Err(e) => {
                 log::warn!("Clipboard connection to {addr} closed: {e}");
@@ -214,7 +224,9 @@ pub async fn listen_clipboard(
                                 let write_task = tokio::task::spawn_local(async move {
                                     while let Ok(msg) = outgoing_rx.recv().await {
                                         if let Err(e) = write_message(&mut tx, &msg).await {
-                                            log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
+                                            log::warn!(
+                                                "Failed to write clipboard message to {peer_addr}: {e}"
+                                            );
                                             break;
                                         }
                                     }
@@ -224,14 +236,36 @@ pub async fn listen_clipboard(
                                     match read_message(&mut rx).await {
                                         Ok(msg) => {
                                             if let ClipboardMessage::Data { id, data } = &msg {
-                                                log::info!("Clipboard received Data for id {id} (len: {}) from {peer_addr}", data.len());
+                                                log::info!(
+                                                    "Clipboard received Data for id {id} (len: {}) from {peer_addr}",
+                                                    data.len()
+                                                );
                                             } else {
-                                                log::info!("Clipboard received from {peer_addr}: {:?}", msg);
+                                                log::info!(
+                                                    "Clipboard received from {peer_addr}: {:?}",
+                                                    msg
+                                                );
                                             }
                                             let _ = super::CLIPBOARD_INCOMING.send(msg);
                                         }
+                                        Err(ProtocolError::FrameTooLarge(len)) => {
+                                            log::error!(
+                                                "Clipboard frame too large ({} bytes). Sending 413 Error to {peer_addr} and dropping.",
+                                                len
+                                            );
+                                            let _ = super::CLIPBOARD_OUTGOING
+                                                .send(ClipboardMessage::Error { id: 0, code: 413 });
+                                            tokio::time::sleep(std::time::Duration::from_millis(
+                                                50,
+                                            ))
+                                            .await;
+                                            write_task.abort();
+                                            break;
+                                        }
                                         Err(e) => {
-                                            log::warn!("Clipboard connection to {peer_addr} closed: {e}");
+                                            log::warn!(
+                                                "Clipboard connection to {peer_addr} closed: {e}"
+                                            );
                                             write_task.abort();
                                             break;
                                         }
@@ -251,5 +285,78 @@ pub async fn listen_clipboard(
                 Err(e) => log::warn!("Clipboard TLS accept failed for {peer_addr}: {e}"),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn test_clipboard_frame_size_limits() {
+        let mut stream = Vec::new();
+
+        // 1. Exactly MAX_CLIPBOARD_FRAME_SIZE frame -> accepted
+        let exactly_max = ClipboardMessage::Data {
+            id: 1,
+            // 13 bytes overhead: 1 msg_type + 8 id + 4 len
+            data: vec![0u8; (MAX_CLIPBOARD_FRAME_SIZE - 13) as usize],
+        };
+        assert!(write_message(&mut stream, &exactly_max).await.is_ok());
+
+        let mut cursor = Cursor::new(&stream);
+        let decoded = read_message(&mut cursor).await;
+        assert!(decoded.is_ok());
+
+        // 2. 10 MiB + 1 byte -> rejected
+        let mut stream = Vec::new();
+        let over_max = ClipboardMessage::Data {
+            id: 1,
+            data: vec![0u8; (MAX_CLIPBOARD_FRAME_SIZE - 12) as usize],
+        };
+        let res = write_message(&mut stream, &over_max).await;
+        assert!(matches!(res, Err(ProtocolError::FrameTooLarge(_))));
+
+        // 3. 15 MiB -> rejected cleanly on read before allocation
+        let mut stream = Vec::new();
+        let len = 15 * 1024 * 1024_u32;
+        use tokio::io::AsyncWriteExt;
+        let mut cursor = std::io::Cursor::new(&mut stream);
+        cursor.write_u32(len).await.unwrap();
+        // The read_message should reject it just by reading the length
+        let mut cursor = Cursor::new(&stream);
+        let res = read_message(&mut cursor).await;
+        assert!(matches!(res, Err(ProtocolError::FrameTooLarge(15728640))));
+
+        // 4. Malformed/huge frame length -> rejected before allocation
+        let mut stream = Vec::new();
+        let len = 0xFFFFFFFF_u32;
+        let mut cursor = std::io::Cursor::new(&mut stream);
+        cursor.write_u32(len).await.unwrap();
+        let mut cursor = Cursor::new(&stream);
+        let res = read_message(&mut cursor).await;
+        assert!(matches!(res, Err(ProtocolError::FrameTooLarge(0xFFFFFFFF))));
+
+        // 5. Invalid protocol message type
+        let mut stream = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut stream);
+        cursor.write_u32(1).await.unwrap();
+        cursor.write_u8(99).await.unwrap(); // Unknown type 99
+        let mut cursor = Cursor::new(&stream);
+        let res = read_message(&mut cursor).await;
+        assert!(matches!(res, Err(ProtocolError::InvalidMessageType(99))));
+
+        // 6. TCP disconnect during active transfer (UnexpectedEof)
+        let mut stream = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut stream);
+        cursor.write_u32(100).await.unwrap(); // Expecting 100 bytes
+        cursor.write_all(&[1, 2, 3]).await.unwrap(); // Only 3 bytes sent before EOF
+        let mut cursor = Cursor::new(&stream);
+        let res = read_message(&mut cursor).await;
+        match res {
+            Err(ProtocolError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
+            _ => panic!("Expected UnexpectedEof"),
+        }
     }
 }

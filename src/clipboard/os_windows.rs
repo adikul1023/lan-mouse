@@ -194,12 +194,11 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
 
-            let text: String = tokio::task::spawn_blocking(|| {
-                clipboard_win::get_clipboard(formats::Unicode)
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+            let text: String =
+                tokio::task::spawn_blocking(|| clipboard_win::get_clipboard(formats::Unicode))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
 
             // Apply 10MB limit
             let max_bytes = 10 * 1024 * 1024;

@@ -2,8 +2,8 @@ use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tokio::sync::watch;
 
-use super::protocol::ClipboardMessage;
 use super::CLIPBOARD_OUTGOING;
+use super::protocol::ClipboardMessage;
 
 pub trait ClipboardPortal: Send + Sync {
     fn receive_selection_owner_changed(
@@ -200,7 +200,10 @@ impl ClipboardTask {
 
     async fn handle_peer_connected(&mut self) {
         if self.current_offer_id > 0 {
-            log::info!("[DEBUG TASK] Peer connected. Re-sending current Offer (id={})", self.current_offer_id);
+            log::info!(
+                "[DEBUG TASK] Peer connected. Re-sending current Offer (id={})",
+                self.current_offer_id
+            );
             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
                 id: self.current_offer_id,
                 mime_type: "text/plain".to_string(),

@@ -82,6 +82,9 @@ impl ClipboardPortal for MockClipboardPortal {
                 .lock()
                 .unwrap()
                 .push(format!("selection_read({})", mime));
+            if self.read_data.is_empty() {
+                return Err("Simulated OS integration failure".to_string());
+            }
             Ok(self.read_data.clone())
         })
     }
@@ -171,7 +174,7 @@ async fn test_clipboard_state_machine() {
     owner_tx.send(()).await.unwrap();
 
     let msg = outgoing_rx.recv().await.unwrap();
-    let offer_id = match msg {
+    let _offer_id = match msg {
         ClipboardMessage::Offer { id, mime_type } => {
             assert_eq!(mime_type, "text/plain");
             id
@@ -261,7 +264,7 @@ async fn test_eager_fetch() {
 
     let mut outgoing_rx = CLIPBOARD_OUTGOING.subscribe();
 
-    let (session_tx, session_rx) = watch::channel(Some(()));
+    let (_session_tx, session_rx) = watch::channel(Some(()));
 
     let _ = super::ACTIVE_CLIPBOARD_PEER.send_replace(Some(100));
 
@@ -291,6 +294,156 @@ async fn test_eager_fetch() {
             assert_eq!(id, 1);
         }
         _ => panic!("Expected Request"),
+    }
+
+    task_handle.abort();
+}
+
+#[tokio::test]
+async fn test_failure_isolation_and_stress() {
+    let (owner_tx, owner_rx) = mpsc::channel(1);
+    let (_transfer_tx, transfer_rx) = mpsc::channel(1);
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let portal = MockClipboardPortal {
+        owner_changed_rx: Arc::new(tokio::sync::Mutex::new(Some(owner_rx))),
+        transfer_rx: Arc::new(tokio::sync::Mutex::new(Some(transfer_rx))),
+        events: events.clone(),
+        read_data: Vec::new(), // Empty indicates simulated error
+        eager_fetch: false,
+    };
+
+    let mut outgoing_rx = CLIPBOARD_OUTGOING.subscribe();
+    let portal_opt = Arc::new(tokio::sync::Mutex::new(Some(portal)));
+    let (session_tx, session_rx) = watch::channel(Some(()));
+
+    let _ = super::ACTIVE_CLIPBOARD_PEER.send_replace(Some(100));
+
+    let task_handle = tokio::spawn(async move {
+        ClipboardTask::run_with_factory(session_rx, move |_: ()| {
+            let p_opt = portal_opt.clone();
+            async move {
+                let p = p_opt.lock().await.take();
+                p.map(|x| Box::new(x) as Box<dyn ClipboardPortal>)
+            }
+        })
+        .await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // We must trigger an owner change to get a valid current_offer_id
+    owner_tx.send(()).await.unwrap();
+    let msg = outgoing_rx.recv().await.unwrap();
+    let current_offer_id = match msg {
+        ClipboardMessage::Offer { id, .. } => id,
+        _ => panic!("Expected Offer"),
+    };
+
+    // Test: OS integration failure (wl-paste fails)
+    CLIPBOARD_INCOMING
+        .send(ClipboardMessage::Request {
+            id: current_offer_id,
+        })
+        .unwrap();
+    // Wait for the task to process
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // It should send a 500 error since we simulate an OS failure
+    let msg = outgoing_rx.recv().await.unwrap();
+    match msg {
+        ClipboardMessage::Error { id, code } => {
+            assert_eq!(id, current_offer_id);
+            assert_eq!(code, 500);
+        }
+        _ => panic!("Expected Error 500 for OS failure"),
+    }
+
+    // Phase 4C: Stress / Soak Testing - payload sizes
+    // We send incoming Data of various sizes to see if the portal processes them without blocking
+    let sizes = [
+        1024,             // 1 KiB
+        100 * 1024,       // 100 KiB
+        1024 * 1024,      // 1 MiB
+        5 * 1024 * 1024,  // 5 MiB
+        10 * 1024 * 1024, // 10 MiB
+    ];
+
+    for size in sizes {
+        // Must send an Offer first so it expects the Data
+        let offer_id = size as u64;
+        CLIPBOARD_INCOMING
+            .send(ClipboardMessage::Offer {
+                id: offer_id,
+                mime_type: "text/plain".to_string(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        CLIPBOARD_INCOMING
+            .send(ClipboardMessage::Data {
+                id: offer_id,
+                data: vec![0u8; size],
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Verify the portal got the valid writes
+    {
+        let evs = events.lock().unwrap();
+        assert!(evs.contains(&"selection_write(text/plain, 1024 bytes)".to_string()));
+        assert!(evs.contains(&"selection_write(text/plain, 10485760 bytes)".to_string()));
+    }
+
+    // Rapid clipboard changes
+    for i in 200..205 {
+        CLIPBOARD_INCOMING
+            .send(ClipboardMessage::Offer {
+                id: i,
+                mime_type: "text/plain".to_string(),
+            })
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send data for an old offer (203 instead of 204) -> should be discarded
+    CLIPBOARD_INCOMING
+        .send(ClipboardMessage::Data {
+            id: 203,
+            data: vec![0],
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    {
+        let evs = events.lock().unwrap();
+        // It shouldn't have done selection_write for the stale data
+        assert!(!evs.contains(&"selection_write(text/plain, 1 bytes)".to_string()));
+    }
+
+    // Verify Reconnect Behavior (handle_peer_connected)
+    // 1. Task has a current offer ID
+    // We trigger local owner_changed to generate an offer
+    let _ = owner_tx.send(()).await;
+
+    // Read the Offer that goes out
+    let msg = outgoing_rx.recv().await.unwrap();
+    let current_offer_id = match msg {
+        ClipboardMessage::Offer { id, .. } => id,
+        _ => panic!("Expected Offer"),
+    };
+
+    // Simulate TCP reconnect
+    let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
+
+    // We should see the EXACT SAME Offer resent
+    let msg = outgoing_rx.recv().await.unwrap();
+    match msg {
+        ClipboardMessage::Offer { id, .. } => {
+            assert_eq!(id, current_offer_id);
+        }
+        _ => panic!("Expected Offer on reconnect"),
     }
 
     task_handle.abort();

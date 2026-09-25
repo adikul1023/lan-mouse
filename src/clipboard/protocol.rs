@@ -12,6 +12,8 @@ pub enum ProtocolError {
     InvalidMessageType(u8),
     #[error("Payload too short")]
     PayloadTooShort,
+    #[error("Frame too large: {0}")]
+    FrameTooLarge(u32),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

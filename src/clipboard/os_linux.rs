@@ -90,7 +90,27 @@ impl ClipboardPortal for AshpdClipboardPortal {
         &'a self,
         _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        Box::pin(async move { Ok(Vec::new()) })
+        let clipboard = self.clipboard.clone();
+        Box::pin(async move {
+            let data = match clipboard.read_selection().await {
+                Ok(stream) => {
+                    // Collect up to max limit + 1
+                    let max_bytes = crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE as usize;
+                    let mut data = Vec::new();
+                    // We need to consume the Stream returned by read_selection
+                    let mut stream = stream;
+                    while let Some(chunk) = stream.next().await {
+                        data.extend_from_slice(&chunk);
+                        if data.len() > max_bytes {
+                            return Err("Clipboard data exceeds 10MB limit".to_string());
+                        }
+                    }
+                    data
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            Ok(data)
+        })
     }
 
     fn set_selection<'a>(
@@ -140,7 +160,7 @@ impl ClipboardPortal for WlClipboardPortal {
                             if n == 0 {
                                 break;
                             }
-                            
+
                             let mut is_echo = false;
                             if let Ok(mut lock) = current_child.try_lock() {
                                 if let Some(copy_child) = lock.as_mut() {
@@ -154,9 +174,11 @@ impl ClipboardPortal for WlClipboardPortal {
                                     }
                                 }
                             }
-                            
+
                             if is_echo {
-                                log::info!("[DEBUG LINUX] owner_changed ignored as echo (wl-copy is still running)");
+                                log::info!(
+                                    "[DEBUG LINUX] owner_changed ignored as echo (wl-copy is still running)"
+                                );
                                 continue;
                             }
                             log::info!("[DEBUG LINUX] owner_changed accepted as external change");
@@ -199,7 +221,7 @@ impl ClipboardPortal for WlClipboardPortal {
                 .map_err(|e| e.to_string())?;
 
             let mut stdin = child.stdin.take().unwrap();
-            
+
             if let Ok(mut lock) = child_arc.lock() {
                 *lock = Some(child);
             }
@@ -221,6 +243,10 @@ impl ClipboardPortal for WlClipboardPortal {
                 .output()
                 .await
                 .map_err(|e| e.to_string())?;
+            if output.stdout.len() > crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE as usize
+            {
+                return Err("Clipboard data exceeds 10MB limit".to_string());
+            }
             Ok(output.stdout)
         })
     }
