@@ -124,11 +124,9 @@ pub async fn connect_clipboard(
                 }
             }
             Ok(msg) = outgoing_rx.recv() => {
-                if super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow().is_some() {
-                    if let Err(e) = write_message(&mut tls_stream, &msg).await {
-                        log::warn!("Failed to write clipboard message to {addr}: {e}");
-                        break;
-                    }
+                if let Err(e) = write_message(&mut tls_stream, &msg).await {
+                    log::warn!("Failed to write clipboard message to {addr}: {e}");
+                    break;
                 }
             }
         }
@@ -226,11 +224,9 @@ pub async fn listen_clipboard(
                                             }
                                         }
                                         Ok(msg) = outgoing_rx.recv() => {
-                                            if super::ACTIVE_CLIPBOARD_PEER.subscribe().borrow().is_some() {
-                                                if let Err(e) = write_message(&mut tls_stream, &msg).await {
-                                                    log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
-                                                    break;
-                                                }
+                                            if let Err(e) = write_message(&mut tls_stream, &msg).await {
+                                                log::warn!("Failed to write clipboard message to {peer_addr}: {e}");
+                                                break;
                                             }
                                         }
                                     }
