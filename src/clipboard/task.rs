@@ -1,9 +1,15 @@
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tokio::sync::watch;
+use std::collections::HashSet;
 
 use super::CLIPBOARD_OUTGOING;
 use super::protocol::ClipboardMessage;
+
+pub struct ClipboardItem {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
 
 pub trait ClipboardPortal: Send + Sync {
     fn receive_selection_owner_changed(
@@ -18,13 +24,14 @@ pub trait ClipboardPortal: Send + Sync {
     >;
     fn selection_write<'a>(
         &'a self,
-        mime: &'a str,
-        data: Vec<u8>,
+        items: Vec<ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+    
     fn selection_read<'a>(
         &'a self,
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+    
     fn set_selection<'a>(
         &'a self,
         mime: &'a str,
@@ -43,16 +50,26 @@ pub trait ClipboardPortal: Send + Sync {
         ]
     }
 
-    /// Return true if the OS integration expects the network to eagerly fetch data immediately upon receiving an Offer.
     fn eager_fetch(&self) -> bool {
         false
     }
+}
+
+const MAX_CLIPBOARD_BUNDLE_SIZE: usize = 250 * 1024 * 1024; // 250MB
+const MAX_CLIPBOARD_ITEM_SIZE: usize = 100 * 1024 * 1024; // 100MB
+
+struct ClipboardTransfer {
+    id: u64,
+    expected_mimes: HashSet<String>,
+    received_items: Vec<ClipboardItem>,
+    total_bytes: usize,
 }
 
 pub struct ClipboardTask {
     portal: Option<Box<dyn ClipboardPortal>>,
     current_offer_id: u64,
     next_offer_id: u64,
+    active_transfer: Option<ClipboardTransfer>,
 }
 
 impl ClipboardTask {
@@ -68,6 +85,7 @@ impl ClipboardTask {
             portal: None,
             current_offer_id: 0,
             next_offer_id: 1,
+            active_transfer: None,
         };
 
         let mut incoming_rx = super::CLIPBOARD_INCOMING.subscribe();
@@ -94,6 +112,7 @@ impl ClipboardTask {
                     owner_changed_stream = None;
                     transfer_stream = None;
                     task.portal = None;
+                    task.active_transfer = None;
 
                     if let Some(session) = session_opt {
                         log::info!("ClipboardTask: Received new InputCapture session");
@@ -149,61 +168,70 @@ impl ClipboardTask {
                 );
                 self.current_offer_id = id;
 
-                // Preserve source clipboard semantics: iterate over the offered types in order
-                // and pick the first one that we locally support.
                 let supported = portal.get_supported_mime_types();
-                let mut selected_mime = None;
+                let mut requested_mimes = Vec::new();
+                let mut expected_set = HashSet::new();
+
                 for mime in &mime_types {
-                    if supported.contains(mime) {
-                        selected_mime = Some(mime.as_str());
-                        break;
+                    if supported.contains(mime) && expected_set.insert(mime.clone()) {
+                        requested_mimes.push(mime.clone());
                     }
                 }
 
-                let selected_mime = match selected_mime {
-                    Some(m) => m,
-                    None => {
-                        log::warn!(
-                            "[DEBUG TASK] No supported MIME types offered: {:?}",
-                            mime_types
-                        );
-                        return;
-                    }
-                };
-
-                if let Err(e) = portal.set_selection(selected_mime).await {
-                    log::warn!("[DEBUG TASK] Failed to set selection on portal: {e}");
+                if requested_mimes.is_empty() {
+                    log::warn!(
+                        "[DEBUG TASK] No supported MIME types offered: {:?}",
+                        mime_types
+                    );
+                    self.active_transfer = None;
+                    return;
                 }
+
+                self.active_transfer = Some(ClipboardTransfer {
+                    id,
+                    expected_mimes: expected_set,
+                    received_items: Vec::new(),
+                    total_bytes: 0,
+                });
+
                 if portal.eager_fetch() {
                     log::info!(
-                        "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id} ({})",
-                        selected_mime
+                        "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}"
                     );
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
                         id,
-                        mime_type: selected_mime.to_string(),
+                        mime_types: requested_mimes.clone(),
                     });
                 }
+
+                for mime in requested_mimes {
+                    if let Err(e) = portal.set_selection(&mime).await {
+                        log::warn!("[DEBUG TASK] Failed to set selection for {mime}: {e}");
+                    }
+                }
             }
-            ClipboardMessage::Request { id, mime_type } => {
-                log::info!("[DEBUG TASK] Request received over TCP for offer {id} ({mime_type})");
+            ClipboardMessage::Request { id, mime_types } => {
+                log::info!("[DEBUG TASK] Request received over TCP for offer {id} ({:?})", mime_types);
                 if id != self.current_offer_id {
                     log::warn!("[DEBUG TASK] Requested superseded offer {id}");
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 404 });
                     return;
                 }
-                match portal.selection_read(&mime_type).await {
-                    Ok(data) => {
-                        log::info!("[DEBUG TASK] Generating Data message for offer {id}");
-                        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data {
-                            id,
-                            mime_type,
-                            data,
-                        });
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to read selection from portal: {e}");
-                        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 500 });
+                
+                for mime_type in mime_types {
+                    match portal.selection_read(&mime_type).await {
+                        Ok(data) => {
+                            log::info!("[DEBUG TASK] Generating Data message for offer {id} ({mime_type})");
+                            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data {
+                                id,
+                                mime_type,
+                                data,
+                            });
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to read selection {mime_type} from portal: {e}");
+                            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 500 });
+                        }
                     }
                 }
             }
@@ -216,17 +244,59 @@ impl ClipboardTask {
                     "[DEBUG TASK] Data received over TCP for offer {id} ({mime_type}) with length {}",
                     data.len()
                 );
-                if id != self.current_offer_id {
-                    log::warn!("[DEBUG TASK] Received data for superseded offer {id}");
+                
+                let Some(transfer) = &mut self.active_transfer else {
+                    log::warn!("[DEBUG TASK] Received data but no active transfer");
+                    return;
+                };
+
+                if transfer.id != id {
+                    log::warn!("[DEBUG TASK] Received data for mismatched offer {id}");
                     return;
                 }
-                log::info!("[DEBUG TASK] Invoking selection_write()");
-                if let Err(e) = portal.selection_write(&mime_type, data).await {
-                    log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
+                
+                if !transfer.expected_mimes.contains(&mime_type) {
+                    log::warn!("[DEBUG TASK] Received unrequested MIME type {mime_type}");
+                    return;
+                }
+                
+                if transfer.received_items.iter().any(|i| i.mime_type == mime_type) {
+                    log::warn!("[DEBUG TASK] Received duplicate Data for {mime_type}");
+                    return;
+                }
+                
+                if data.len() > MAX_CLIPBOARD_ITEM_SIZE {
+                    log::warn!("[DEBUG TASK] Item size exceeded limit");
+                    self.active_transfer = None;
+                    return;
+                }
+                
+                if transfer.total_bytes.saturating_add(data.len()) > MAX_CLIPBOARD_BUNDLE_SIZE {
+                    log::warn!("[DEBUG TASK] Aggregate clipboard size exceeded limit");
+                    self.active_transfer = None;
+                    return;
+                }
+                
+                transfer.total_bytes += data.len();
+                transfer.received_items.push(ClipboardItem { mime_type, data });
+                
+                if transfer.received_items.len() == transfer.expected_mimes.len() {
+                    log::info!("[DEBUG TASK] All requested representations received. Committing clipboard.");
+                    let items = std::mem::take(&mut transfer.received_items);
+                    self.active_transfer = None;
+                    
+                    if let Err(e) = portal.selection_write(items).await {
+                        log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
+                    }
                 }
             }
             ClipboardMessage::Error { id, code } => {
                 log::warn!("Clipboard error from remote: id={id}, code={code}");
+                if let Some(transfer) = &self.active_transfer {
+                    if transfer.id == id {
+                        self.active_transfer = None;
+                    }
+                }
             }
             _ => {}
         }
@@ -263,63 +333,28 @@ impl ClipboardTask {
 
     async fn handle_transfer(&mut self) {
         log::info!("Local app requested clipboard transfer");
-        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
-            id: self.current_offer_id,
-            mime_type: "text/plain".to_string(), // Requesting app will be improved later
-        });
+        if let Some(transfer) = &self.active_transfer {
+            let mimes: Vec<String> = transfer.expected_mimes.iter().cloned().collect();
+            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
+                id: transfer.id,
+                mime_types: mimes,
+            });
+        } else {
+             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
+                id: self.current_offer_id,
+                mime_types: vec!["text/plain".to_string()],
+            });
+        }
     }
+    
     async fn generate_offer_mime_types(&self) -> Vec<String> {
-        let mut mime_types = vec!["text/plain".to_string()]; // fallback
         if let Some(portal) = &self.portal {
             if let Ok(available) = portal.get_available_mime_types().await {
                 if !available.is_empty() {
-                    mime_types = available;
+                    return available;
                 }
-            }
-
-            let has_image = mime_types.iter().any(|m| m.starts_with("image/"));
-            let has_html = mime_types.contains(&"text/html".to_string());
-            let mut image_promoted = false;
-
-            if has_image && has_html {
-                // If it's an image-only HTML representation (like Firefox Copy Image),
-                // promote image types over HTML in the offer so peers negotiate the image.
-                if let Ok(html_data) = portal.selection_read("text/html").await {
-                    let html_str = String::from_utf8_lossy(&html_data);
-                    if crate::clipboard::is_image_only_html(&html_str) {
-                        image_promoted = true;
-                        mime_types.sort_by_key(|m| {
-                            if m.starts_with("image/") {
-                                0
-                            } else if m == "text/html" {
-                                1
-                            } else {
-                                2
-                            }
-                        });
-                    }
-                }
-            }
-
-            // If we didn't explicitly promote the image (because it's not an image-only HTML),
-            // we enforce a strict priority: text/plain > image > text/html.
-            // Why? If we prioritize text/html, Windows CF_HTML fragments (which lack <html> wrappers)
-            // will paste as raw HTML strings in many Linux apps (like VSCode).
-            // Prioritizing text/plain guarantees clean text pasting.
-            if !image_promoted && mime_types.len() > 1 {
-                mime_types.sort_by_key(|m| {
-                    if m == "text/plain" {
-                        0
-                    } else if m.starts_with("image/") {
-                        1
-                    } else if m == "text/html" {
-                        2
-                    } else {
-                        3
-                    }
-                });
             }
         }
-        mime_types
+        vec!["text/plain".to_string()]
     }
 }

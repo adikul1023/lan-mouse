@@ -80,8 +80,7 @@ impl ClipboardPortal for AshpdClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        _mime: &'a str,
-        _data: Vec<u8>,
+        _items: Vec<super::task::ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
@@ -112,7 +111,7 @@ impl ClipboardPortal for AshpdClipboardPortal {
 }
 
 pub struct WlClipboardPortal {
-    current_copy_child: std::sync::Arc<std::sync::Mutex<Option<tokio::process::Child>>>,
+    current_copy_child: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
 }
 
 impl WlClipboardPortal {
@@ -149,14 +148,11 @@ impl ClipboardPortal for WlClipboardPortal {
 
                             let mut is_echo = false;
                             if let Ok(mut lock) = current_child.try_lock() {
-                                if let Some(copy_child) = lock.as_mut() {
-                                    match copy_child.try_wait() {
-                                        Ok(None) => {
-                                            is_echo = true;
-                                        }
-                                        _ => {
-                                            *lock = None;
-                                        }
+                                if let Some(handle) = lock.as_ref() {
+                                    if !handle.is_finished() {
+                                        is_echo = true;
+                                    } else {
+                                        *lock = None;
                                     }
                                 }
                             }
@@ -195,33 +191,38 @@ impl ClipboardPortal for WlClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        mime: &'a str,
-        data: Vec<u8>,
+        items: Vec<super::task::ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         let child_arc = self.current_copy_child.clone();
-        let mime_str = mime.to_string();
         Box::pin(async move {
-            if mime_str.starts_with("image/") {
-                super::validate_image_dimensions(&data)?;
-            }
-            let mut cmd = tokio::process::Command::new("wl-copy");
-            if mime_str != "text/plain" {
-                cmd.arg("--type").arg(&mime_str);
-            }
-            let mut child = cmd
-                .arg("--foreground")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| e.to_string())?;
+            let handle = tokio::task::spawn_blocking(move || {
+                let mut opts = wl_clipboard_rs::copy::Options::new();
+                opts.foreground(true);
+                let mut sources = Vec::new();
+                for item in items {
+                    if item.mime_type.starts_with("image/") {
+                        if let Err(e) = super::validate_image_dimensions(&item.data) {
+                            log::warn!("Invalid image data: {e}");
+                            continue;
+                        }
+                    }
+                    let mime = if item.mime_type == "text/plain" {
+                        wl_clipboard_rs::copy::MimeType::Text
+                    } else {
+                        wl_clipboard_rs::copy::MimeType::Specific(item.mime_type)
+                    };
+                    sources.push((mime, wl_clipboard_rs::copy::Source::Bytes(item.data.into())));
+                }
 
-            let mut stdin = child.stdin.take().unwrap();
+                if sources.is_empty() {
+                    return Ok(());
+                }
 
+                opts.copy_multi(sources).map_err(|e| format!("wl-clipboard-rs copy error: {:?}", e))
+            });
+            
             if let Ok(mut lock) = child_arc.lock() {
-                *lock = Some(child);
-            }
-
-            if let Err(e) = stdin.write_all(&data).await {
-                log::warn!("Failed to write data to wl-copy: {}", e);
+                *lock = Some(handle);
             }
             Ok(())
         })
