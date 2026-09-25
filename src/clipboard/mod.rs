@@ -60,24 +60,32 @@ pub fn validate_image_dimensions(data: &[u8]) -> Result<(), String> {
         let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
         let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as usize;
         if width > 8192 || height > 8192 {
-            return Err(format!("Image dimensions exceed 8192x8192 ({}x{})", width, height));
+            return Err(format!(
+                "Image dimensions exceed 8192x8192 ({}x{})",
+                width, height
+            ));
         }
-        if width.checked_mul(height).and_then(|a| a.checked_mul(4)).unwrap_or(usize::MAX) > 256 * 1024 * 1024 {
+        if width
+            .checked_mul(height)
+            .and_then(|a| a.checked_mul(4))
+            .unwrap_or(usize::MAX)
+            > 256 * 1024 * 1024
+        {
             return Err("Decoded image size exceeds 256 MiB limit".to_string());
         }
     }
     Ok(())
 }
 
-/// Detects if an HTML snippet is merely a structural wrapper for an image (like what Firefox 
-/// produces when you "Copy Image"). We consider it "image only" if it contains an <img> tag 
+/// Detects if an HTML snippet is merely a structural wrapper for an image (like what Firefox
+/// produces when you "Copy Image"). We consider it "image only" if it contains an <img> tag
 /// and contains no meaningful text outside of HTML tags.
 pub fn is_image_only_html(html: &str) -> bool {
     let lower = html.to_lowercase();
     if !lower.contains("<img ") {
         return false;
     }
-    
+
     let mut in_tag = false;
     let mut text_content = String::new();
     for c in html.chars() {
@@ -91,8 +99,7 @@ pub fn is_image_only_html(html: &str) -> bool {
             }
         }
     }
-    
+
     let cleaned = text_content.replace("&nbsp;", "").replace("&#160;", "");
     cleaned.is_empty()
 }
-

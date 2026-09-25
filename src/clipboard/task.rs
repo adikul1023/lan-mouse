@@ -302,16 +302,17 @@ impl ClipboardTask {
             }
 
             // If we didn't explicitly promote the image (because it's not an image-only HTML),
-            // we should enforce a sane default priority: text/plain > image > text/html.
-            // This prevents applications that put a CF_DIB thumbnail alongside rich text
+            // we should enforce a sane default priority: text/html > text/plain > image.
+            // Prioritizing HTML preserves rich text. Prioritizing text over image prevents
+            // applications that put a CF_DIB thumbnail alongside rich text
             // from causing the remote to fetch an image instead of the text.
             if !image_promoted && mime_types.len() > 1 {
                 mime_types.sort_by_key(|m| {
-                    if m == "text/plain" {
+                    if m == "text/html" {
                         0
-                    } else if m.starts_with("image/") {
+                    } else if m == "text/plain" {
                         1
-                    } else if m == "text/html" {
+                    } else if m.starts_with("image/") {
                         2
                     } else {
                         3
