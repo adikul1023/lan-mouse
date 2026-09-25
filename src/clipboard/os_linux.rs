@@ -204,9 +204,11 @@ impl ClipboardPortal for WlClipboardPortal {
             if mime_str.starts_with("image/") {
                 super::validate_image_dimensions(&data)?;
             }
-            let mut child = tokio::process::Command::new("wl-copy")
-                .arg("--type")
-                .arg(&mime_str)
+            let mut cmd = tokio::process::Command::new("wl-copy");
+            if mime_str != "text/plain" {
+                cmd.arg("--type").arg(&mime_str);
+            }
+            let mut child = cmd
                 .arg("--foreground")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
@@ -252,7 +254,10 @@ impl ClipboardPortal for WlClipboardPortal {
                 }
                 if data.len() + n > max_payload {
                     let _ = child.kill().await;
-                    return Err(format!("Clipboard data exceeds {}MB limit", crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)));
+                    return Err(format!(
+                        "Clipboard data exceeds {}MB limit",
+                        crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE / (1024 * 1024)
+                    ));
                 }
                 data.extend_from_slice(&buf[..n]);
             }

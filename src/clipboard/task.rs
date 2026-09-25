@@ -276,15 +276,18 @@ impl ClipboardTask {
                     mime_types = available;
                 }
             }
-            
+
             let has_image = mime_types.iter().any(|m| m.starts_with("image/"));
             let has_html = mime_types.contains(&"text/html".to_string());
+            let mut image_promoted = false;
+
             if has_image && has_html {
                 // If it's an image-only HTML representation (like Firefox Copy Image),
                 // promote image types over HTML in the offer so peers negotiate the image.
                 if let Ok(html_data) = portal.selection_read("text/html").await {
                     let html_str = String::from_utf8_lossy(&html_data);
                     if crate::clipboard::is_image_only_html(&html_str) {
+                        image_promoted = true;
                         mime_types.sort_by_key(|m| {
                             if m.starts_with("image/") {
                                 0
@@ -296,6 +299,24 @@ impl ClipboardTask {
                         });
                     }
                 }
+            }
+
+            // If we didn't explicitly promote the image (because it's not an image-only HTML),
+            // we should enforce a sane default priority: text/plain > image > text/html.
+            // This prevents applications that put a CF_DIB thumbnail alongside rich text
+            // from causing the remote to fetch an image instead of the text.
+            if !image_promoted && mime_types.len() > 1 {
+                mime_types.sort_by_key(|m| {
+                    if m == "text/plain" {
+                        0
+                    } else if m.starts_with("image/") {
+                        1
+                    } else if m == "text/html" {
+                        2
+                    } else {
+                        3
+                    }
+                });
             }
         }
         mime_types
