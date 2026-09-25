@@ -105,11 +105,15 @@ impl ClipboardPortal for AshpdClipboardPortal {
     }
 }
 
-pub struct WlClipboardPortal {}
+pub struct WlClipboardPortal {
+    current_copy_child: std::sync::Arc<std::sync::Mutex<Option<tokio::process::Child>>>,
+}
 
 impl WlClipboardPortal {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            current_copy_child: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 }
 
@@ -119,6 +123,7 @@ impl ClipboardPortal for WlClipboardPortal {
     ) -> Pin<
         Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
     > {
+        let current_child = self.current_copy_child.clone();
         Box::pin(async move {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tokio::task::spawn(async move {
@@ -135,6 +140,27 @@ impl ClipboardPortal for WlClipboardPortal {
                             if n == 0 {
                                 break;
                             }
+                            
+                            let mut is_echo = false;
+                            if let Ok(mut lock) = current_child.try_lock() {
+                                if let Some(copy_child) = lock.as_mut() {
+                                    match copy_child.try_wait() {
+                                        Ok(None) => {
+                                            is_echo = true;
+                                        }
+                                        _ => {
+                                            *lock = None;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if is_echo {
+                                log::info!("[DEBUG LINUX] owner_changed ignored as echo (wl-copy is still running)");
+                                continue;
+                            }
+                            log::info!("[DEBUG LINUX] owner_changed accepted as external change");
+
                             if tx.send(()).await.is_err() {
                                 break;
                             }
@@ -164,14 +190,22 @@ impl ClipboardPortal for WlClipboardPortal {
         _mime: &'a str,
         data: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let child_arc = self.current_copy_child.clone();
         Box::pin(async move {
             let mut child = tokio::process::Command::new("wl-copy")
+                .arg("--foreground")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| e.to_string())?;
 
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&data).await;
+            let mut stdin = child.stdin.take().unwrap();
+            
+            if let Ok(mut lock) = child_arc.lock() {
+                *lock = Some(child);
+            }
+
+            if let Err(e) = stdin.write_all(&data).await {
+                log::warn!("Failed to write data to wl-copy: {}", e);
             }
             Ok(())
         })

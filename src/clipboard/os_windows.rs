@@ -15,26 +15,40 @@ extern "system" {
 
 struct EchoSuppressor {
     expected_sequence_number: Option<u32>,
+    is_writing: bool,
 }
 
 impl EchoSuppressor {
     fn new() -> Self {
         Self {
             expected_sequence_number: None,
+            is_writing: false,
         }
+    }
+
+    fn prepare_write(&mut self) {
+        self.is_writing = true;
     }
 
     fn record_write(&mut self) {
         self.expected_sequence_number = Some(unsafe { GetClipboardSequenceNumber() });
+        self.is_writing = false;
     }
 
     fn check_and_clear_echo(&mut self) -> bool {
+        if self.is_writing {
+            return true;
+        }
         if let Some(expected) = self.expected_sequence_number {
             let current = unsafe { GetClipboardSequenceNumber() };
             if expected == current {
                 self.expected_sequence_number = None;
                 return true;
             }
+            // If the current sequence number is different but we expected one,
+            // we should still clear it so we don't accidentally suppress a future update
+            // that happens to wrap around or hit that number.
+            self.expected_sequence_number = None;
         }
         false
     }
@@ -147,7 +161,16 @@ impl ClipboardPortal for WindowsClipboardPortal {
 
             let text = String::from_utf8(data).map_err(|e| e.to_string())?;
 
-            clipboard_win::set_clipboard(formats::Unicode, text).map_err(|e| e.to_string())?;
+            if let Ok(mut supp) = self.suppressor.lock() {
+                supp.prepare_write();
+            }
+
+            tokio::task::spawn_blocking(move || {
+                clipboard_win::set_clipboard(formats::Unicode, text)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
 
             if let Ok(mut supp) = self.suppressor.lock() {
                 supp.record_write();
@@ -171,8 +194,12 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
 
-            let text: String =
-                clipboard_win::get_clipboard(formats::Unicode).map_err(|e| e.to_string())?;
+            let text: String = tokio::task::spawn_blocking(|| {
+                clipboard_win::get_clipboard(formats::Unicode)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
 
             // Apply 10MB limit
             let max_bytes = 10 * 1024 * 1024;
