@@ -220,12 +220,12 @@ impl ClipboardPortal for WindowsClipboardPortal {
 
                         if mime == "text/plain" {
                             if let Ok(text) = String::from_utf8(data) {
-                                let _ = clipboard_win::set_clipboard(formats::Unicode, text);
+                                let _ = clipboard_win::set(formats::Unicode, text);
                             }
                         } else if mime == "text/html" {
                             if let Some(html_fmt) = clipboard_win::register_format("HTML Format") {
                                 let encoded = encode_cf_html(&data);
-                                let _ = clipboard_win::set_clipboard(
+                                let _ = clipboard_win::set(
                                     clipboard_win::formats::RawData(html_fmt.get()),
                                     encoded,
                                 );
@@ -239,7 +239,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
                                     // Remove the 14-byte BMP header to get a CF_DIB (DIB)
                                     if bmp_data.len() > 14 {
                                         let dib_data = &bmp_data[14..];
-                                        let _ = clipboard_win::set_clipboard(
+                                        let _ = clipboard_win::set(
                                             clipboard_win::formats::RawData(8), // CF_DIB = 8
                                             dib_data.to_vec(),
                                         );
