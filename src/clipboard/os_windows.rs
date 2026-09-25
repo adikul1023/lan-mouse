@@ -6,6 +6,58 @@ use futures::Stream;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
+fn encode_cf_html(fragment: &[u8]) -> Vec<u8> {
+    let html_prefix = "<html>\r\n<body>\r\n<!--StartFragment-->";
+    let html_suffix = "<!--EndFragment-->\r\n</body>\r\n</html>";
+
+    let start_html = 105;
+    let start_fragment = start_html + html_prefix.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + html_suffix.len();
+
+    let header = format!(
+        "Version:0.9\r\nStartHTML:{:010}\r\nEndHTML:{:010}\r\nStartFragment:{:010}\r\nEndFragment:{:010}\r\n",
+        start_html, end_html, start_fragment, end_fragment
+    );
+
+    let mut result = Vec::new();
+    result.extend_from_slice(header.as_bytes());
+    result.extend_from_slice(html_prefix.as_bytes());
+    result.extend_from_slice(fragment);
+    result.extend_from_slice(html_suffix.as_bytes());
+    result.push(0);
+    result
+}
+
+fn decode_cf_html(data: &[u8]) -> Result<Vec<u8>, String> {
+    let data_str = String::from_utf8_lossy(data);
+
+    let mut start_fragment = 0;
+    let mut end_fragment = data.len();
+    let mut found_start = false;
+    let mut found_end = false;
+
+    for line in data_str.lines() {
+        if line.starts_with("StartFragment:") {
+            if let Ok(offset) = line["StartFragment:".len()..].trim().parse::<usize>() {
+                start_fragment = offset;
+                found_start = true;
+            }
+        } else if line.starts_with("EndFragment:") {
+            if let Ok(offset) = line["EndFragment:".len()..].trim().parse::<usize>() {
+                end_fragment = offset;
+                found_end = true;
+            }
+        }
+    }
+
+    if found_start && found_end && start_fragment <= end_fragment && end_fragment <= data.len() {
+        Ok(data[start_fragment..end_fragment].to_vec())
+    } else {
+        Err("Malformed CF_HTML or invalid fragment offsets".to_string())
+    }
+}
+
 use super::task::ClipboardPortal;
 
 #[link(name = "user32")]
@@ -155,22 +207,40 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 "[DEBUG WINDOWS] selection_write() invoked with length {}",
                 data.len()
             );
-            if mime != "text/plain" {
+            if mime == "text/plain" {
+                let text = String::from_utf8(data).map_err(|e| e.to_string())?;
+
+                if let Ok(mut supp) = self.suppressor.lock() {
+                    supp.prepare_write();
+                }
+
+                tokio::task::spawn_blocking(move || {
+                    clipboard_win::set_clipboard(formats::Unicode, text)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            } else if mime == "text/html" {
+                if let Ok(mut supp) = self.suppressor.lock() {
+                    supp.prepare_write();
+                }
+
+                tokio::task::spawn_blocking(move || {
+                    let html_fmt = clipboard_win::register_format("HTML Format")
+                        .ok_or_else(|| "Failed to register HTML Format".to_string())?;
+                    let encoded = encode_cf_html(&data);
+                    clipboard_win::set_clipboard(
+                        clipboard_win::formats::RawData(html_fmt.get()),
+                        encoded,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            } else {
                 return Err(format!("Unsupported MIME type: {}", mime));
             }
-
-            let text = String::from_utf8(data).map_err(|e| e.to_string())?;
-
-            if let Ok(mut supp) = self.suppressor.lock() {
-                supp.prepare_write();
-            }
-
-            tokio::task::spawn_blocking(move || {
-                clipboard_win::set_clipboard(formats::Unicode, text)
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
 
             if let Ok(mut supp) = self.suppressor.lock() {
                 supp.record_write();
@@ -190,23 +260,35 @@ impl ClipboardPortal for WindowsClipboardPortal {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
             log::info!("[DEBUG WINDOWS] selection_read() invoked for mime {}", mime);
-            if mime != "text/plain" {
-                return Err(format!("Unsupported MIME type: {}", mime));
-            }
-
-            let text: String =
-                tokio::task::spawn_blocking(|| clipboard_win::get_clipboard(formats::Unicode))
-                    .await
-                    .map_err(|e| e.to_string())?
+            let data = if mime == "text/plain" {
+                let text: String =
+                    tokio::task::spawn_blocking(|| clipboard_win::get_clipboard(formats::Unicode))
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string())?;
+                text.into_bytes()
+            } else if mime == "text/html" {
+                tokio::task::spawn_blocking(|| {
+                    let html_fmt = clipboard_win::register_format("HTML Format")
+                        .ok_or_else(|| "Failed to register HTML Format".to_string())?;
+                    let data: Vec<u8> = clipboard_win::get_clipboard(
+                        clipboard_win::formats::RawData(html_fmt.get()),
+                    )
                     .map_err(|e| e.to_string())?;
+                    decode_cf_html(&data)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?
+            } else {
+                return Err(format!("Unsupported MIME type: {}", mime));
+            };
 
             // Apply limit (account for 13 bytes framing overhead)
             let max_payload = (crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE - 13) as usize;
-            if text.len() > max_payload {
-                return Err("Clipboard text exceeds 10MB limit".to_string());
+            if data.len() > max_payload {
+                return Err("Clipboard data exceeds 10MB limit".to_string());
             }
-
-            let data = text.into_bytes();
             log::info!(
                 "[DEBUG WINDOWS] text length successfully read: {}",
                 data.len()
@@ -224,6 +306,39 @@ impl ClipboardPortal for WindowsClipboardPortal {
             Ok(())
         })
     }
+
+    fn get_available_mime_types(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
+        Box::pin(async move {
+            let mut available = tokio::task::spawn_blocking(move || {
+                let mut avail = Vec::new();
+                let _clip =
+                    clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
+                if let Some(html_fmt) = clipboard_win::register_format("HTML Format") {
+                    if clipboard_win::is_format_avail(html_fmt.get()) {
+                        avail.push("text/html".to_string());
+                    }
+                }
+                if clipboard_win::is_format_avail(13) {
+                    // CF_UNICODETEXT
+                    avail.push("text/plain".to_string());
+                } else if clipboard_win::is_format_avail(1) {
+                    // CF_TEXT
+                    avail.push("text/plain".to_string());
+                }
+                Ok::<Vec<String>, String>(avail)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+
+            if available.is_empty() {
+                available.push("text/plain".to_string()); // fallback
+            }
+            Ok(available)
+        })
+    }
 }
 
 pub fn init_clipboard_task() -> tokio::task::JoinHandle<()> {
@@ -236,4 +351,61 @@ pub fn init_clipboard_task() -> tokio::task::JoinHandle<()> {
         })
         .await;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cf_html_roundtrip_ascii() {
+        let input = b"<b>hello</b>";
+        let encoded = encode_cf_html(input);
+        let decoded = decode_cf_html(&encoded).unwrap();
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn test_cf_html_roundtrip_unicode() {
+        let input = "<b>こんにちは (Hello in Japanese) / नमस्ते (Hindi) / 🌍 (Emoji)</b>".as_bytes();
+        let encoded = encode_cf_html(input);
+        let decoded = decode_cf_html(&encoded).unwrap();
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn test_cf_html_roundtrip_multiline() {
+        let input = b"<ul>\r\n  <li>Line 1</li>\n  <li>Line 2</li>\r\n</ul>";
+        let encoded = encode_cf_html(input);
+        let decoded = decode_cf_html(&encoded).unwrap();
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn test_cf_html_roundtrip_empty() {
+        let input = b"";
+        let encoded = encode_cf_html(input);
+        let decoded = decode_cf_html(&encoded).unwrap();
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn test_cf_html_roundtrip_large() {
+        let input = vec![b'A'; 100_000];
+        let encoded = encode_cf_html(&input);
+        let decoded = decode_cf_html(&encoded).unwrap();
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn test_cf_html_decode_malformed() {
+        let malformed = b"Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\n";
+        let result = decode_cf_html(malformed);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Malformed CF_HTML or invalid fragment offsets");
+        
+        let invalid_offsets = b"Version:0.9\r\nStartFragment:0000000100\r\nEndFragment:0000000050\r\n";
+        let result = decode_cf_html(invalid_offsets);
+        assert!(result.is_err());
+    }
 }

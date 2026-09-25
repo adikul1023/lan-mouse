@@ -41,11 +41,15 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
 pub async fn write_message<W: AsyncWriteExt + Unpin>(
     stream: &mut W,
     msg: &ClipboardMessage,
+    version: u16,
 ) -> Result<(), ProtocolError> {
     let mut buf = Vec::new();
-    msg.encode(&mut buf)?;
+    msg.encode(&mut buf, version)?;
 
     let length = buf.len() as u32;
+    if length == 0 {
+        return Ok(());
+    }
     if length > MAX_CLIPBOARD_FRAME_SIZE {
         return Err(ProtocolError::FrameTooLarge(length));
     }
@@ -93,9 +97,34 @@ pub async fn connect_clipboard(
 
     // 4. Send Protocol Hello
     let hello = ClipboardMessage::Hello {
-        protocol_version: 1,
+        protocol_version: 2,
     };
-    write_message(&mut tls_stream, &hello).await?;
+    write_message(&mut tls_stream, &hello, 2).await?;
+
+    // Wait for HelloAck from Server
+    let session_version = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_message(&mut tls_stream),
+    )
+    .await
+    {
+        Ok(Ok(ClipboardMessage::HelloAck { protocol_version })) => {
+            log::info!("Clipboard HelloAck from {addr} (v{protocol_version})");
+            protocol_version
+        }
+        Ok(Ok(msg)) => {
+            log::warn!("Expected HelloAck, got {:?}", msg);
+            return Err("Expected HelloAck".into());
+        }
+        Ok(Err(e)) => {
+            log::warn!("Failed to read clipboard HelloAck from {addr}: {e}");
+            return Err(e.into());
+        }
+        Err(_) => {
+            log::warn!("Timed out waiting for clipboard HelloAck from {addr}");
+            return Err("Timed out waiting for HelloAck".into());
+        }
+    };
 
     let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
     let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
@@ -105,7 +134,7 @@ pub async fn connect_clipboard(
     // 5. Active receive and write loops
     let write_task = tokio::task::spawn_local(async move {
         while let Ok(msg) = outgoing_rx.recv().await {
-            if let Err(e) = write_message(&mut tx, &msg).await {
+            if let Err(e) = write_message(&mut tx, &msg, session_version).await {
                 log::warn!("Failed to write clipboard message to {addr}: {e}");
                 match e {
                     ProtocolError::FrameTooLarge(_) => continue,
@@ -118,7 +147,7 @@ pub async fn connect_clipboard(
     loop {
         match read_message(&mut rx).await {
             Ok(msg) => {
-                if let ClipboardMessage::Data { id, data } = &msg {
+                if let ClipboardMessage::Data { id, data, .. } = &msg {
                     log::info!(
                         "Clipboard received Data for id {id} (len: {}) from {addr}",
                         data.len()
@@ -208,22 +237,15 @@ pub async fn listen_clipboard(
                     {
                         Ok(Ok(ClipboardMessage::Hello { protocol_version })) => {
                             log::info!("Clipboard Hello from {peer_addr} (v{protocol_version})");
-                            if protocol_version != 1 {
-                                log::warn!(
-                                    "Unsupported protocol version {protocol_version} from {peer_addr}"
-                                );
-                                let _ = write_message(
-                                    &mut tls_stream,
-                                    &ClipboardMessage::Error { id: 0, code: 400 },
-                                )
-                                .await;
-                                return;
-                            }
+
+                            let session_version = std::cmp::min(protocol_version, 2);
 
                             let ack = ClipboardMessage::HelloAck {
-                                protocol_version: 1,
+                                protocol_version: session_version,
                             };
-                            if let Err(e) = write_message(&mut tls_stream, &ack).await {
+                            if let Err(e) =
+                                write_message(&mut tls_stream, &ack, session_version).await
+                            {
                                 log::warn!("Failed to send clipboard HelloAck to {peer_addr}: {e}");
                             } else {
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
@@ -232,7 +254,9 @@ pub async fn listen_clipboard(
                                 // Active receive and write loops
                                 let write_task = tokio::task::spawn_local(async move {
                                     while let Ok(msg) = outgoing_rx.recv().await {
-                                        if let Err(e) = write_message(&mut tx, &msg).await {
+                                        if let Err(e) =
+                                            write_message(&mut tx, &msg, session_version).await
+                                        {
                                             log::warn!(
                                                 "Failed to write clipboard message to {peer_addr}: {e}"
                                             );
@@ -247,7 +271,7 @@ pub async fn listen_clipboard(
                                 loop {
                                     match read_message(&mut rx).await {
                                         Ok(msg) => {
-                                            if let ClipboardMessage::Data { id, data } = &msg {
+                                            if let ClipboardMessage::Data { id, data, .. } = &msg {
                                                 log::info!(
                                                     "Clipboard received Data for id {id} (len: {}) from {peer_addr}",
                                                     data.len()
@@ -307,10 +331,11 @@ mod tests {
         // 1. Exactly MAX_CLIPBOARD_FRAME_SIZE frame -> accepted
         let exactly_max = ClipboardMessage::Data {
             id: 1,
-            // 13 bytes overhead: 1 msg_type + 8 id + 4 len
+            mime_type: "text/plain".to_string(),
+            // 13 bytes overhead: 1 msg_type + 8 id + 4 len (for V1 text/plain)
             data: vec![0u8; (MAX_CLIPBOARD_FRAME_SIZE - 13) as usize],
         };
-        assert!(write_message(&mut stream, &exactly_max).await.is_ok());
+        assert!(write_message(&mut stream, &exactly_max, 1).await.is_ok());
 
         let mut cursor = Cursor::new(&stream);
         let decoded = read_message(&mut cursor).await;
@@ -320,9 +345,10 @@ mod tests {
         let mut stream = Vec::new();
         let over_max = ClipboardMessage::Data {
             id: 1,
+            mime_type: "text/plain".to_string(),
             data: vec![0u8; (MAX_CLIPBOARD_FRAME_SIZE - 12) as usize],
         };
-        let res = write_message(&mut stream, &over_max).await;
+        let res = write_message(&mut stream, &over_max, 1).await;
         assert!(matches!(res, Err(ProtocolError::FrameTooLarge(_))));
 
         // 3. 15 MiB -> rejected cleanly on read before allocation
@@ -371,6 +397,95 @@ mod tests {
         match res {
             Err(ProtocolError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
             _ => panic!("Expected UnexpectedEof"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v1_v2_compatibility() {
+        let msg_offer = ClipboardMessage::Offer {
+            id: 42,
+            mime_types: vec!["text/html".to_string(), "text/plain".to_string()],
+        };
+
+        let msg_data = ClipboardMessage::Data {
+            id: 42,
+            mime_type: "text/html".to_string(),
+            data: b"hello".to_vec(),
+        };
+
+        // 1. V1 Serialisation strips to text/plain and legacy format
+        let mut v1_stream = Vec::new();
+        write_message(&mut v1_stream, &msg_offer, 1).await.unwrap();
+
+        let mut cursor = Cursor::new(&v1_stream);
+        let decoded_offer = read_message(&mut cursor).await.unwrap();
+
+        // When reading from V1 stream (which doesn't encode version in stream for Offer),
+        // we parse it as V1 and read_message natively yields text/plain.
+        if let ClipboardMessage::Offer { id, mime_types } = decoded_offer {
+            assert_eq!(id, 42);
+            assert_eq!(mime_types, vec!["text/plain".to_string()]);
+        } else {
+            panic!("Expected Offer");
+        }
+
+        let msg_data_v1 = ClipboardMessage::Data {
+            id: 42,
+            mime_type: "text/plain".to_string(),
+            data: b"hello".to_vec(),
+        };
+
+        // V1 Data serialisation
+        let mut v1_stream = Vec::new();
+        write_message(&mut v1_stream, &msg_data_v1, 1).await.unwrap();
+        let mut cursor = Cursor::new(&v1_stream);
+        let decoded_data = read_message(&mut cursor).await.unwrap();
+
+        if let ClipboardMessage::Data {
+            id,
+            mime_type,
+            data,
+        } = decoded_data
+        {
+            assert_eq!(id, 42);
+            assert_eq!(mime_type, "text/plain");
+            assert_eq!(data, b"hello");
+        } else {
+            panic!("Expected Data");
+        }
+
+        // 2. V2 Serialisation preserves HTML and fields
+        let mut v2_stream = Vec::new();
+        write_message(&mut v2_stream, &msg_offer, 2).await.unwrap();
+        let mut cursor = Cursor::new(&v2_stream);
+        let decoded_offer = read_message(&mut cursor).await.unwrap();
+
+        if let ClipboardMessage::Offer { id, mime_types } = decoded_offer {
+            assert_eq!(id, 42);
+            assert_eq!(
+                mime_types,
+                vec!["text/html".to_string(), "text/plain".to_string()]
+            );
+        } else {
+            panic!("Expected Offer");
+        }
+
+        let mut v2_stream = Vec::new();
+        write_message(&mut v2_stream, &msg_data, 2).await.unwrap();
+        let mut cursor = Cursor::new(&v2_stream);
+        let decoded_data = read_message(&mut cursor).await.unwrap();
+
+        if let ClipboardMessage::Data {
+            id,
+            mime_type,
+            data,
+        } = decoded_data
+        {
+            assert_eq!(id, 42);
+            assert_eq!(mime_type, "text/html");
+            assert_eq!(data, b"hello");
+        } else {
+            panic!("Expected Data");
         }
     }
 }

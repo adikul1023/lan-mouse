@@ -93,6 +93,7 @@ impl ClipboardPortal for MockClipboardPortal {
         &'a self,
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let mime = mime.to_string();
         Box::pin(async move {
             self.events
                 .lock()
@@ -100,6 +101,12 @@ impl ClipboardPortal for MockClipboardPortal {
                 .push(format!("set_selection({})", mime));
             Ok(())
         })
+    }
+
+    fn get_available_mime_types(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(vec!["text/plain".to_string()]) })
     }
 }
 
@@ -175,11 +182,11 @@ async fn test_clipboard_state_machine() {
 
     let msg = outgoing_rx.recv().await.unwrap();
     let _offer_id = match msg {
-        ClipboardMessage::Offer { id, mime_type } => {
-            assert_eq!(mime_type, "text/plain");
+        ClipboardMessage::Offer { id, mime_types } => {
+            assert!(mime_types.contains(&"text/plain".to_string()));
             id
         }
-        _ => panic!("Expected Offer"),
+        _ => panic!("Expected Offer, got {msg:?}"),
     };
 
     // Test 2: Remote Offer arrives -> portal selection is registered
@@ -187,7 +194,7 @@ async fn test_clipboard_state_machine() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Offer {
             id: remote_offer_id,
-            mime_type: "text/plain".to_string(),
+            mime_types: vec!["text/plain".to_string()],
         })
         .unwrap();
 
@@ -201,8 +208,9 @@ async fn test_clipboard_state_machine() {
     transfer_tx.send(()).await.unwrap();
     let msg = outgoing_rx.recv().await.unwrap();
     match msg {
-        ClipboardMessage::Request { id } => {
+        ClipboardMessage::Request { id, mime_type } => {
             assert_eq!(id, remote_offer_id);
+            assert_eq!(mime_type, "text/plain");
         }
         _ => panic!("Expected Request"),
     }
@@ -211,6 +219,7 @@ async fn test_clipboard_state_machine() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Data {
             id: remote_offer_id,
+            mime_type: "text/plain".to_string(),
             data: b"remote_data".to_vec(),
         })
         .unwrap();
@@ -225,6 +234,7 @@ async fn test_clipboard_state_machine() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Request {
             id: remote_offer_id - 1, // Stale ID
+            mime_type: "text/plain".to_string(),
         })
         .unwrap();
 
@@ -234,7 +244,7 @@ async fn test_clipboard_state_machine() {
             assert_eq!(id, remote_offer_id - 1);
             assert_eq!(code, 404);
         }
-        _ => panic!("Expected Error(NotFound)"),
+        _ => panic!("Expected Error(NotFound), got: {:?}", msg),
     }
 
     // Test 6: Session recreation -> old streams terminated
@@ -283,15 +293,16 @@ async fn test_eager_fetch() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Offer {
             id: 1,
-            mime_type: "text/plain".to_string(),
+            mime_types: vec!["text/plain".to_string()],
         })
         .unwrap();
 
     // Because eager_fetch is true, the task should immediately send a Request
     let msg = outgoing_rx.recv().await.unwrap();
     match msg {
-        ClipboardMessage::Request { id } => {
+        ClipboardMessage::Request { id, mime_type } => {
             assert_eq!(id, 1);
+            assert_eq!(mime_type, "text/plain");
         }
         _ => panic!("Expected Request"),
     }
@@ -337,13 +348,14 @@ async fn test_failure_isolation_and_stress() {
     let msg = outgoing_rx.recv().await.unwrap();
     let current_offer_id = match msg {
         ClipboardMessage::Offer { id, .. } => id,
-        _ => panic!("Expected Offer"),
+        _ => panic!("Expected Offer, got {msg:?}"),
     };
 
     // Test: OS integration failure (wl-paste fails)
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Request {
             id: current_offer_id,
+            mime_type: "text/plain".to_string(),
         })
         .unwrap();
     // Wait for the task to process
@@ -356,7 +368,7 @@ async fn test_failure_isolation_and_stress() {
             assert_eq!(id, current_offer_id);
             assert_eq!(code, 500);
         }
-        _ => panic!("Expected Error 500 for OS failure"),
+        _ => panic!("Expected Error 500 for OS failure, got {:?}", msg),
     }
 
     // Phase 4C: Stress / Soak Testing - payload sizes
@@ -375,7 +387,7 @@ async fn test_failure_isolation_and_stress() {
         CLIPBOARD_INCOMING
             .send(ClipboardMessage::Offer {
                 id: offer_id,
-                mime_type: "text/plain".to_string(),
+                mime_types: vec!["text/plain".to_string()],
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -383,6 +395,7 @@ async fn test_failure_isolation_and_stress() {
         CLIPBOARD_INCOMING
             .send(ClipboardMessage::Data {
                 id: offer_id,
+                mime_type: "text/plain".to_string(),
                 data: vec![0u8; size],
             })
             .unwrap();
@@ -402,7 +415,7 @@ async fn test_failure_isolation_and_stress() {
         CLIPBOARD_INCOMING
             .send(ClipboardMessage::Offer {
                 id: i,
-                mime_type: "text/plain".to_string(),
+                mime_types: vec!["text/plain".to_string()],
             })
             .unwrap();
     }
@@ -412,6 +425,7 @@ async fn test_failure_isolation_and_stress() {
     CLIPBOARD_INCOMING
         .send(ClipboardMessage::Data {
             id: 203,
+            mime_type: "text/plain".to_string(),
             data: vec![0],
         })
         .unwrap();
@@ -431,7 +445,7 @@ async fn test_failure_isolation_and_stress() {
     let msg = outgoing_rx.recv().await.unwrap();
     let current_offer_id = match msg {
         ClipboardMessage::Offer { id, .. } => id,
-        _ => panic!("Expected Offer"),
+        _ => panic!("Expected Offer, got {msg:?}"),
     };
 
     // Simulate TCP reconnect
@@ -443,7 +457,7 @@ async fn test_failure_isolation_and_stress() {
         ClipboardMessage::Offer { id, .. } => {
             assert_eq!(id, current_offer_id);
         }
-        _ => panic!("Expected Offer on reconnect"),
+        _ => panic!("Expected Offer on reconnect, got: {:?}", msg),
     }
 
     task_handle.abort();

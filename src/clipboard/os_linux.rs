@@ -100,6 +100,12 @@ impl ClipboardPortal for AshpdClipboardPortal {
         Box::pin(async move { Ok(()) })
     }
 
+    fn get_available_mime_types(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
+        Box::pin(async move { Ok(vec!["text/plain".to_string()]) })
+    }
+
     fn eager_fetch(&self) -> bool {
         true
     }
@@ -189,12 +195,15 @@ impl ClipboardPortal for WlClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        _mime: &'a str,
+        mime: &'a str,
         data: Vec<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         let child_arc = self.current_copy_child.clone();
+        let mime_str = mime.to_string();
         Box::pin(async move {
             let mut child = tokio::process::Command::new("wl-copy")
+                .arg("--type")
+                .arg(&mime_str)
                 .arg("--foreground")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
@@ -215,10 +224,13 @@ impl ClipboardPortal for WlClipboardPortal {
 
     fn selection_read<'a>(
         &'a self,
-        _mime: &'a str,
+        mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        let mime_str = mime.to_string();
         Box::pin(async move {
             let mut child = tokio::process::Command::new("wl-paste")
+                .arg("--type")
+                .arg(&mime_str)
                 .arg("--no-newline")
                 .stdout(std::process::Stdio::piped())
                 .spawn()
@@ -252,6 +264,32 @@ impl ClipboardPortal for WlClipboardPortal {
         _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
+    }
+
+    fn get_available_mime_types(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
+        Box::pin(async move {
+            let output = tokio::process::Command::new("wl-paste")
+                .arg("--list-types")
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut types = Vec::new();
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                for line in s.lines() {
+                    let t = line.trim();
+                    if !t.is_empty() {
+                        types.push(t.to_string());
+                    }
+                }
+            }
+            if types.is_empty() {
+                types.push("text/plain".to_string());
+            }
+            Ok(types)
+        })
     }
 
     fn eager_fetch(&self) -> bool {

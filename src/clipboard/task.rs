@@ -30,6 +30,14 @@ pub trait ClipboardPortal: Send + Sync {
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
 
+    fn get_available_mime_types(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>>;
+
+    fn get_supported_mime_types(&self) -> Vec<String> {
+        vec!["text/plain".to_string(), "text/html".to_string()]
+    }
+
     /// Return true if the OS integration expects the network to eagerly fetch data immediately upon receiving an Offer.
     fn eager_fetch(&self) -> bool {
         false
@@ -129,34 +137,60 @@ impl ClipboardTask {
         let Some(portal) = &self.portal else { return };
 
         match msg {
-            ClipboardMessage::Offer { id, mime_type } => {
+            ClipboardMessage::Offer { id, mime_types } => {
                 log::info!(
-                    "[DEBUG TASK] Received clipboard offer (id={id}, mime={mime_type}) over TCP"
+                    "[DEBUG TASK] Received clipboard offer (id={id}, mime_types={:?}) over TCP",
+                    mime_types
                 );
                 self.current_offer_id = id;
-                if mime_type == "text/plain" {
-                    if let Err(e) = portal.set_selection(&mime_type).await {
-                        log::warn!("[DEBUG TASK] Failed to set selection on portal: {e}");
-                    }
-                    if portal.eager_fetch() {
-                        log::info!(
-                            "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}"
-                        );
-                        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request { id });
-                    }
+
+                // Deterministic selection: prefer HTML, fallback to text/plain
+                let supported = portal.get_supported_mime_types();
+                let selected_mime = if mime_types.contains(&"text/html".to_string())
+                    && supported.contains(&"text/html".to_string())
+                {
+                    "text/html"
+                } else if mime_types.contains(&"text/plain".to_string())
+                    && supported.contains(&"text/plain".to_string())
+                {
+                    "text/plain"
+                } else {
+                    log::warn!(
+                        "[DEBUG TASK] No supported MIME types offered: {:?}",
+                        mime_types
+                    );
+                    return;
+                };
+
+                if let Err(e) = portal.set_selection(selected_mime).await {
+                    log::warn!("[DEBUG TASK] Failed to set selection on portal: {e}");
+                }
+                if portal.eager_fetch() {
+                    log::info!(
+                        "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id} ({})",
+                        selected_mime
+                    );
+                    let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
+                        id,
+                        mime_type: selected_mime.to_string(),
+                    });
                 }
             }
-            ClipboardMessage::Request { id } => {
-                log::info!("[DEBUG TASK] Request received over TCP for offer {id}");
+            ClipboardMessage::Request { id, mime_type } => {
+                log::info!("[DEBUG TASK] Request received over TCP for offer {id} ({mime_type})");
                 if id != self.current_offer_id {
                     log::warn!("[DEBUG TASK] Requested superseded offer {id}");
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 404 });
                     return;
                 }
-                match portal.selection_read("text/plain").await {
+                match portal.selection_read(&mime_type).await {
                     Ok(data) => {
                         log::info!("[DEBUG TASK] Generating Data message for offer {id}");
-                        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data { id, data });
+                        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data {
+                            id,
+                            mime_type,
+                            data,
+                        });
                     }
                     Err(e) => {
                         log::warn!("Failed to read selection from portal: {e}");
@@ -164,9 +198,13 @@ impl ClipboardTask {
                     }
                 }
             }
-            ClipboardMessage::Data { id, data } => {
+            ClipboardMessage::Data {
+                id,
+                mime_type,
+                data,
+            } => {
                 log::info!(
-                    "[DEBUG TASK] Data received over TCP for offer {id} with length {}",
+                    "[DEBUG TASK] Data received over TCP for offer {id} ({mime_type}) with length {}",
                     data.len()
                 );
                 if id != self.current_offer_id {
@@ -174,7 +212,7 @@ impl ClipboardTask {
                     return;
                 }
                 log::info!("[DEBUG TASK] Invoking selection_write()");
-                if let Err(e) = portal.selection_write("text/plain", data).await {
+                if let Err(e) = portal.selection_write(&mime_type, data).await {
                     log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
                 }
             }
@@ -191,11 +229,20 @@ impl ClipboardTask {
         self.next_offer_id += 1;
         self.current_offer_id = id;
 
-        log::info!("[DEBUG TASK] Generating Offer (id={id})");
-        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
-            id,
-            mime_type: "text/plain".to_string(),
-        });
+        let mut mime_types = vec!["text/plain".to_string()]; // fallback
+        if let Some(portal) = &self.portal {
+            if let Ok(available) = portal.get_available_mime_types().await {
+                if !available.is_empty() {
+                    mime_types = available;
+                }
+            }
+        }
+
+        log::info!(
+            "[DEBUG TASK] Generating Offer (id={id}) with types: {:?}",
+            mime_types
+        );
+        let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer { id, mime_types });
     }
 
     async fn handle_peer_connected(&mut self) {
@@ -204,9 +251,17 @@ impl ClipboardTask {
                 "[DEBUG TASK] Peer connected. Re-sending current Offer (id={})",
                 self.current_offer_id
             );
+            let mut mime_types = vec!["text/plain".to_string()];
+            if let Some(portal) = &self.portal {
+                if let Ok(available) = portal.get_available_mime_types().await {
+                    if !available.is_empty() {
+                        mime_types = available;
+                    }
+                }
+            }
             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
                 id: self.current_offer_id,
-                mime_type: "text/plain".to_string(),
+                mime_types,
             });
         }
     }
@@ -215,6 +270,7 @@ impl ClipboardTask {
         log::info!("Local app requested clipboard transfer");
         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
             id: self.current_offer_id,
+            mime_type: "text/plain".to_string(), // Requesting app will be improved later
         });
     }
 }
