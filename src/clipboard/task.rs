@@ -238,14 +238,7 @@ impl ClipboardTask {
         self.next_offer_id += 1;
         self.current_offer_id = id;
 
-        let mut mime_types = vec!["text/plain".to_string()]; // fallback
-        if let Some(portal) = &self.portal {
-            if let Ok(available) = portal.get_available_mime_types().await {
-                if !available.is_empty() {
-                    mime_types = available;
-                }
-            }
-        }
+        let mime_types = self.generate_offer_mime_types().await;
 
         log::info!(
             "[DEBUG TASK] Generating Offer (id={id}) with types: {:?}",
@@ -260,14 +253,7 @@ impl ClipboardTask {
                 "[DEBUG TASK] Peer connected. Re-sending current Offer (id={})",
                 self.current_offer_id
             );
-            let mut mime_types = vec!["text/plain".to_string()];
-            if let Some(portal) = &self.portal {
-                if let Ok(available) = portal.get_available_mime_types().await {
-                    if !available.is_empty() {
-                        mime_types = available;
-                    }
-                }
-            }
+            let mime_types = self.generate_offer_mime_types().await;
             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
                 id: self.current_offer_id,
                 mime_types,
@@ -281,5 +267,37 @@ impl ClipboardTask {
             id: self.current_offer_id,
             mime_type: "text/plain".to_string(), // Requesting app will be improved later
         });
+    }
+    async fn generate_offer_mime_types(&self) -> Vec<String> {
+        let mut mime_types = vec!["text/plain".to_string()]; // fallback
+        if let Some(portal) = &self.portal {
+            if let Ok(available) = portal.get_available_mime_types().await {
+                if !available.is_empty() {
+                    mime_types = available;
+                }
+            }
+            
+            let has_image = mime_types.iter().any(|m| m.starts_with("image/"));
+            let has_html = mime_types.contains(&"text/html".to_string());
+            if has_image && has_html {
+                // If it's an image-only HTML representation (like Firefox Copy Image),
+                // promote image types over HTML in the offer so peers negotiate the image.
+                if let Ok(html_data) = portal.selection_read("text/html").await {
+                    let html_str = String::from_utf8_lossy(&html_data);
+                    if crate::clipboard::is_image_only_html(&html_str) {
+                        mime_types.sort_by_key(|m| {
+                            if m.starts_with("image/") {
+                                0
+                            } else if m == "text/html" {
+                                1
+                            } else {
+                                2
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        mime_types
     }
 }

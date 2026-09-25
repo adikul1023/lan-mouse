@@ -68,3 +68,31 @@ pub fn validate_image_dimensions(data: &[u8]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Detects if an HTML snippet is merely a structural wrapper for an image (like what Firefox 
+/// produces when you "Copy Image"). We consider it "image only" if it contains an <img> tag 
+/// and contains no meaningful text outside of HTML tags.
+pub fn is_image_only_html(html: &str) -> bool {
+    let lower = html.to_lowercase();
+    if !lower.contains("<img ") {
+        return false;
+    }
+    
+    let mut in_tag = false;
+    let mut text_content = String::new();
+    for c in html.chars() {
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            if !c.is_whitespace() {
+                text_content.push(c);
+            }
+        }
+    }
+    
+    let cleaned = text_content.replace("&nbsp;", "").replace("&#160;", "");
+    cleaned.is_empty()
+}
+

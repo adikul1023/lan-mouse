@@ -479,3 +479,21 @@ fn test_validate_image_dimensions() {
     huge_decoded[20..24].copy_from_slice(&[0x00, 0x00, 0x20, 0x01]);
     assert!(super::validate_image_dimensions(&huge_decoded).is_err());
 }
+
+#[test]
+fn test_is_image_only_html() {
+    let firefox_copy_image = r#"<meta http-equiv="content-type" content="text/html; charset=utf-8"><img src="file:///tmp/img.png" alt="preview">"#;
+    assert!(super::is_image_only_html(firefox_copy_image));
+
+    let cf_html_fragment = r#"<img src="https://example.com/test.png">"#;
+    assert!(super::is_image_only_html(cf_html_fragment));
+
+    let rich_text_with_image = r#"<p>Look at this cool image!</p><img src="test.png">"#;
+    assert!(!super::is_image_only_html(rich_text_with_image));
+
+    let whitespace_html = "   \n  <img src='test.png'> &nbsp;  ";
+    assert!(super::is_image_only_html(whitespace_html));
+
+    let plain_html_text = "<b>Just bold text</b>";
+    assert!(!super::is_image_only_html(plain_html_text));
+}
