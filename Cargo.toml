@@ -76,6 +76,7 @@ libc = "0.2.148"
 
 [target.'cfg(all(unix, not(target_os="macos")))'.dependencies]
 ashpd = { version = "0.13.9", default-features = false, features = ["clipboard", "tokio"], optional = true }
+wl-clipboard-rs = "0.9.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = { version = "5.4.1", features = ["monitor"] }

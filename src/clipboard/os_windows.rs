@@ -199,96 +199,66 @@ impl ClipboardPortal for WindowsClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        mime: &'a str,
-        data: Vec<u8>,
+        items: Vec<super::task::ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let suppressor = self.suppressor.clone();
         Box::pin(async move {
-            log::info!(
-                "[DEBUG WINDOWS] selection_write() invoked with length {}",
-                data.len()
-            );
-            if mime == "text/plain" {
-                let text = String::from_utf8(data).map_err(|e| e.to_string())?;
-
-                if let Ok(mut supp) = self.suppressor.lock() {
+            tokio::task::spawn_blocking(move || {
+                if let Ok(mut supp) = suppressor.lock() {
                     supp.prepare_write();
                 }
 
-                tokio::task::spawn_blocking(move || {
-                    clipboard_win::set_clipboard(formats::Unicode, text)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            } else if mime == "text/html" {
-                if let Ok(mut supp) = self.suppressor.lock() {
-                    supp.prepare_write();
-                }
+                let result = (|| -> Result<(), String> {
+                    let _clip = clipboard_win::Clipboard::new_attempts(10)
+                        .map_err(|e| format!("Failed to open clipboard: {}", e))?;
 
-                tokio::task::spawn_blocking(move || {
-                    let html_fmt = clipboard_win::register_format("HTML Format")
-                        .ok_or_else(|| "Failed to register HTML Format".to_string())?;
-                    let encoded = encode_cf_html(&data);
-                    clipboard_win::set_clipboard(
-                        clipboard_win::formats::RawData(html_fmt.get()),
-                        encoded,
-                    )
-                    .map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            } else if mime.starts_with("image/") {
-                if let Ok(mut supp) = self.suppressor.lock() {
-                    supp.prepare_write();
-                }
-                let data = data.clone();
-                let mime_str = mime.to_string();
+                    clipboard_win::empty().map_err(|e| e.to_string())?;
 
-                tokio::task::spawn_blocking(move || {
-                    let png_fmt = clipboard_win::register_format("PNG");
+                    for item in items {
+                        let mime = item.mime_type.as_str();
+                        let data = item.data;
 
-                    // Always try to write the modern PNG format if we received a PNG/JPEG
-                    if let Some(fmt) = png_fmt {
-                        // If it's already a PNG, just write it
-                        if mime_str == "image/png" {
-                            let _ = clipboard_win::set_clipboard(
-                                clipboard_win::formats::RawData(fmt.get()),
-                                &data,
-                            );
+                        if mime == "text/plain" {
+                            if let Ok(text) = String::from_utf8(data) {
+                                let _ = clipboard_win::set_clipboard(formats::Unicode, text);
+                            }
+                        } else if mime == "text/html" {
+                            if let Some(html_fmt) = clipboard_win::register_format("HTML Format") {
+                                let encoded = encode_cf_html(&data);
+                                let _ = clipboard_win::set_clipboard(
+                                    clipboard_win::formats::RawData(html_fmt.get()),
+                                    encoded,
+                                );
+                            }
+                        } else if mime == "image/png" {
+                            super::validate_image_dimensions(&data)?;
+                            if let Ok(img) = image::load_from_memory_with_format(&data, image::ImageFormat::Png) {
+                                let mut bmp_data = Vec::new();
+                                let mut cursor = std::io::Cursor::new(&mut bmp_data);
+                                if img.write_to(&mut cursor, image::ImageFormat::Bmp).is_ok() {
+                                    // Remove the 14-byte BMP header to get a CF_DIB (DIB)
+                                    if bmp_data.len() > 14 {
+                                        let dib_data = &bmp_data[14..];
+                                        let _ = clipboard_win::set_clipboard(
+                                            clipboard_win::formats::RawData(8), // CF_DIB = 8
+                                            dib_data.to_vec(),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
+                    Ok(())
+                })();
 
-                    // For legacy app compatibility, decode the image and write it as CF_DIB (Bitmap).
-                    // The clipboard-win `formats::Bitmap` expects a standard .bmp file layout
-                    // and handles the CF_DIB conversion internally.
-                    if let Ok(img) = image::load_from_memory(&data) {
-                        let mut bmp_data = std::io::Cursor::new(Vec::new());
-                        if img.write_to(&mut bmp_data, image::ImageFormat::Bmp).is_ok() {
-                            let _ = clipboard_win::set_clipboard(
-                                clipboard_win::formats::Bitmap,
-                                bmp_data.into_inner(),
-                            );
-                        }
-                    }
-                    Ok::<(), String>(())
-                })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            } else {
-                return Err(format!("Unsupported MIME type: {}", mime));
-            }
+                if let Ok(mut supp) = suppressor.lock() {
+                    supp.record_write();
+                }
 
-            if let Ok(mut supp) = self.suppressor.lock() {
-                supp.record_write();
-                log::info!(
-                    "[DEBUG WINDOWS] clipboard sequence number recorded after write: {:?}",
-                    supp.expected_sequence_number
-                );
-            }
-
-            Ok(())
+                result
+            })
+            .await
+            .map_err(|e| e.to_string())?
         })
     }
 
@@ -499,3 +469,4 @@ mod tests {
         assert!(result.is_err());
     }
 }
+

@@ -30,7 +30,7 @@ pub enum ClipboardMessage {
     },
     Request {
         id: u64,
-        mime_type: String,
+        mime_types: Vec<String>,
     },
     Data {
         id: u64,
@@ -53,6 +53,7 @@ impl ClipboardMessage {
     pub const MSG_OFFER_V2: u8 = 7;
     pub const MSG_REQUEST_V2: u8 = 8;
     pub const MSG_DATA_V2: u8 = 9;
+    pub const MSG_REQUEST_V3: u8 = 10;
 
     pub fn encode(&self, out: &mut impl Write, version: u16) -> io::Result<()> {
         match self {
@@ -84,15 +85,28 @@ impl ClipboardMessage {
                     out.write_all(bytes)?;
                 }
             }
-            ClipboardMessage::Request { id, mime_type } => {
-                if version >= 2 {
-                    out.write_all(&[Self::MSG_REQUEST_V2])?;
+            ClipboardMessage::Request { id, mime_types } => {
+                if version >= 3 {
+                    out.write_all(&[Self::MSG_REQUEST_V3])?;
                     out.write_all(&id.to_be_bytes())?;
-                    let bytes = mime_type.as_bytes();
-                    let len = std::cmp::min(bytes.len(), 255) as u8;
-                    out.write_all(&[len])?;
-                    out.write_all(&bytes[..len as usize])?;
-                } else if mime_type == "text/plain" {
+                    let count = std::cmp::min(mime_types.len(), 255) as u8;
+                    out.write_all(&[count])?;
+                    for mime in mime_types.iter().take(count as usize) {
+                        let bytes = mime.as_bytes();
+                        let len = std::cmp::min(bytes.len(), 255) as u8;
+                        out.write_all(&[len])?;
+                        out.write_all(&bytes[..len as usize])?;
+                    }
+                } else if version >= 2 {
+                    if let Some(mime) = mime_types.first() {
+                        out.write_all(&[Self::MSG_REQUEST_V2])?;
+                        out.write_all(&id.to_be_bytes())?;
+                        let bytes = mime.as_bytes();
+                        let len = std::cmp::min(bytes.len(), 255) as u8;
+                        out.write_all(&[len])?;
+                        out.write_all(&bytes[..len as usize])?;
+                    }
+                } else if mime_types.contains(&"text/plain".to_string()) {
                     out.write_all(&[Self::MSG_REQUEST])?;
                     out.write_all(&id.to_be_bytes())?;
                 }
@@ -166,7 +180,7 @@ impl ClipboardMessage {
                 src.read_exact(&mut id_b)?;
                 Ok(ClipboardMessage::Request {
                     id: u64::from_be_bytes(id_b),
-                    mime_type: "text/plain".to_string(),
+                    mime_types: vec!["text/plain".to_string()],
                 })
             }
             Self::MSG_DATA => {
@@ -213,7 +227,27 @@ impl ClipboardMessage {
                 src.read_exact(&mut mime_b)?;
                 Ok(ClipboardMessage::Request {
                     id: u64::from_be_bytes(id_b),
-                    mime_type: String::from_utf8(mime_b)?,
+                    mime_types: vec![String::from_utf8(mime_b)?],
+                })
+            }
+            Self::MSG_REQUEST_V3 => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut count_b = [0u8; 1];
+                src.read_exact(&mut count_b)?;
+                let count = count_b[0] as usize;
+                let mut mime_types = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let mut len_b = [0u8; 1];
+                    src.read_exact(&mut len_b)?;
+                    let len = len_b[0] as usize;
+                    let mut mime_b = vec![0u8; len];
+                    src.read_exact(&mut mime_b)?;
+                    mime_types.push(String::from_utf8(mime_b)?);
+                }
+                Ok(ClipboardMessage::Request {
+                    id: u64::from_be_bytes(id_b),
+                    mime_types,
                 })
             }
             Self::MSG_DATA_V2 => {
