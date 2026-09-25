@@ -1,18 +1,13 @@
 use ashpd::desktop::Session;
 use futures::{Stream, StreamExt};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::pin::Pin;
-use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-use super::protocol::ClipboardMessage;
-use super::{CLIPBOARD_INCOMING, CLIPBOARD_OUTGOING};
 
 use crate::clipboard::task::{ClipboardPortal, ClipboardTask};
 
 pub struct AshpdClipboardPortal {
     clipboard: std::sync::Arc<ashpd::desktop::clipboard::Clipboard>,
-    session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>,
+    _session: std::sync::Arc<Session<ashpd::desktop::input_capture::InputCapture>>,
 }
 
 impl AshpdClipboardPortal {
@@ -24,7 +19,7 @@ impl AshpdClipboardPortal {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             clipboard: std::sync::Arc::new(clipboard),
-            session,
+            _session: session,
         })
     }
 }
@@ -100,9 +95,13 @@ impl ClipboardPortal for AshpdClipboardPortal {
 
     fn set_selection<'a>(
         &'a self,
-        mime: &'a str,
+        _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
+    }
+
+    fn eager_fetch(&self) -> bool {
+        true
     }
 }
 
@@ -154,7 +153,7 @@ impl ClipboardPortal for WlClipboardPortal {
         Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
     > {
         Box::pin(async move {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
                 as Pin<Box<dyn Stream<Item = ()> + Send>>
         })
@@ -194,9 +193,13 @@ impl ClipboardPortal for WlClipboardPortal {
 
     fn set_selection<'a>(
         &'a self,
-        mime: &'a str,
+        _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
+    }
+
+    fn eager_fetch(&self) -> bool {
+        true
     }
 }
 
