@@ -200,9 +200,9 @@ impl ClipboardPortal for WindowsClipboardPortal {
                     .map_err(|e| e.to_string())?
                     .map_err(|e| e.to_string())?;
 
-            // Apply 10MB limit
-            let max_bytes = 10 * 1024 * 1024;
-            if text.len() > max_bytes {
+            // Apply limit (account for 13 bytes framing overhead)
+            let max_payload = (crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE - 13) as usize;
+            if text.len() > max_payload {
                 return Err("Clipboard text exceeds 10MB limit".to_string());
             }
 

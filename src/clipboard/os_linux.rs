@@ -218,16 +218,32 @@ impl ClipboardPortal for WlClipboardPortal {
         _mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            let output = tokio::process::Command::new("wl-paste")
+            let mut child = tokio::process::Command::new("wl-paste")
                 .arg("--no-newline")
-                .output()
-                .await
+                .stdout(std::process::Stdio::piped())
+                .spawn()
                 .map_err(|e| e.to_string())?;
-            if output.stdout.len() > crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE as usize
-            {
-                return Err("Clipboard data exceeds 10MB limit".to_string());
+
+            let mut stdout = child.stdout.take().ok_or("Failed to open stdout")?;
+            let mut data = Vec::new();
+            let mut buf = [0u8; 8192];
+            // MAX_CLIPBOARD_FRAME_SIZE includes 13 bytes protocol overhead for Data message
+            let max_payload = crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE as usize - 13;
+
+            loop {
+                let n = stdout.read(&mut buf).await.map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                if data.len() + n > max_payload {
+                    let _ = child.kill().await;
+                    return Err("Clipboard data exceeds 10MB limit".to_string());
+                }
+                data.extend_from_slice(&buf[..n]);
             }
-            Ok(output.stdout)
+
+            let _ = child.wait().await;
+            Ok(data)
         })
     }
 

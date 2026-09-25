@@ -20,6 +20,14 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
 ) -> Result<ClipboardMessage, ProtocolError> {
     let length = stream.read_u32().await?;
     if length > MAX_CLIPBOARD_FRAME_SIZE {
+        // Read and discard the oversized payload to keep the stream synchronized
+        let mut remaining = length as usize;
+        let mut discard_buf = [0u8; 8192];
+        while remaining > 0 {
+            let to_read = std::cmp::min(remaining, discard_buf.len());
+            stream.read_exact(&mut discard_buf[..to_read]).await?;
+            remaining -= to_read;
+        }
         return Err(ProtocolError::FrameTooLarge(length));
     }
 
@@ -99,7 +107,10 @@ pub async fn connect_clipboard(
         while let Ok(msg) = outgoing_rx.recv().await {
             if let Err(e) = write_message(&mut tx, &msg).await {
                 log::warn!("Failed to write clipboard message to {addr}: {e}");
-                break;
+                match e {
+                    ProtocolError::FrameTooLarge(_) => continue,
+                    _ => break,
+                }
             }
         }
     });
@@ -126,14 +137,12 @@ pub async fn connect_clipboard(
             }
             Err(ProtocolError::FrameTooLarge(len)) => {
                 log::error!(
-                    "Clipboard frame too large ({} bytes). Sending 413 Error to {addr} and dropping.",
+                    "Clipboard frame too large ({} bytes). Sending 413 Error to {addr}.",
                     len
                 );
                 let _ =
                     super::CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id: 0, code: 413 });
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                write_task.abort();
-                break;
+                continue;
             }
             Err(e) => {
                 log::warn!("Clipboard connection to {addr} closed: {e}");
@@ -227,7 +236,10 @@ pub async fn listen_clipboard(
                                             log::warn!(
                                                 "Failed to write clipboard message to {peer_addr}: {e}"
                                             );
-                                            break;
+                                            match e {
+                                                ProtocolError::FrameTooLarge(_) => continue,
+                                                _ => break,
+                                            }
                                         }
                                     }
                                 });
@@ -250,17 +262,12 @@ pub async fn listen_clipboard(
                                         }
                                         Err(ProtocolError::FrameTooLarge(len)) => {
                                             log::error!(
-                                                "Clipboard frame too large ({} bytes). Sending 413 Error to {peer_addr} and dropping.",
+                                                "Clipboard frame too large ({} bytes). Sending 413 Error to {peer_addr}.",
                                                 len
                                             );
                                             let _ = super::CLIPBOARD_OUTGOING
                                                 .send(ClipboardMessage::Error { id: 0, code: 413 });
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                50,
-                                            ))
-                                            .await;
-                                            write_task.abort();
-                                            break;
+                                            continue;
                                         }
                                         Err(e) => {
                                             log::warn!(
@@ -327,7 +334,11 @@ mod tests {
         // The read_message should reject it just by reading the length
         let mut cursor = Cursor::new(&stream);
         let res = read_message(&mut cursor).await;
-        assert!(matches!(res, Err(ProtocolError::FrameTooLarge(15728640))));
+        // Since we don't write the payload, the discard loop will hit EOF
+        match res {
+            Err(ProtocolError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
+            _ => panic!("Expected UnexpectedEof due to missing payload"),
+        }
 
         // 4. Malformed/huge frame length -> rejected before allocation
         let mut stream = Vec::new();
@@ -336,7 +347,10 @@ mod tests {
         cursor.write_u32(len).await.unwrap();
         let mut cursor = Cursor::new(&stream);
         let res = read_message(&mut cursor).await;
-        assert!(matches!(res, Err(ProtocolError::FrameTooLarge(0xFFFFFFFF))));
+        match res {
+            Err(ProtocolError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
+            _ => panic!("Expected UnexpectedEof due to missing payload"),
+        }
 
         // 5. Invalid protocol message type
         let mut stream = Vec::new();
