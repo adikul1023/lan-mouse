@@ -3,7 +3,7 @@ use std::pin::Pin;
 use tokio::sync::watch;
 
 use super::protocol::ClipboardMessage;
-use super::{CLIPBOARD_INCOMING, CLIPBOARD_OUTGOING};
+use super::CLIPBOARD_OUTGOING;
 
 pub trait ClipboardPortal: Send + Sync {
     fn receive_selection_owner_changed(
@@ -57,7 +57,8 @@ impl ClipboardTask {
             next_offer_id: 1,
         };
 
-        let mut incoming_rx = CLIPBOARD_INCOMING.subscribe();
+        let mut incoming_rx = super::CLIPBOARD_INCOMING.subscribe();
+        let mut transport_rx = super::CLIPBOARD_TRANSPORT_CONNECTED.subscribe();
         let mut owner_changed_stream: Option<Pin<Box<dyn Stream<Item = ()> + Send>>> = None;
         let mut transfer_stream: Option<Pin<Box<dyn Stream<Item = ()> + Send>>> = None;
 
@@ -95,6 +96,10 @@ impl ClipboardTask {
 
                 Ok(msg) = incoming_rx.recv() => {
                     task.handle_incoming_message(msg).await;
+                }
+
+                Ok(_) = transport_rx.recv() => {
+                    task.handle_peer_connected().await;
                 }
 
                 Some(_) = async {
@@ -191,6 +196,16 @@ impl ClipboardTask {
             id,
             mime_type: "text/plain".to_string(),
         });
+    }
+
+    async fn handle_peer_connected(&mut self) {
+        if self.current_offer_id > 0 {
+            log::info!("[DEBUG TASK] Peer connected. Re-sending current Offer (id={})", self.current_offer_id);
+            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer {
+                id: self.current_offer_id,
+                mime_type: "text/plain".to_string(),
+            });
+        }
     }
 
     async fn handle_transfer(&mut self) {

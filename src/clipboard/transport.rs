@@ -94,6 +94,7 @@ pub async fn connect_clipboard(
     write_message(&mut tls_stream, &hello).await?;
 
     let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
+    let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
 
     // 5. Active receive loop
     loop {
@@ -207,6 +208,7 @@ pub async fn listen_clipboard(
                                 log::warn!("Failed to send clipboard HelloAck to {peer_addr}: {e}");
                             } else {
                                 let mut outgoing_rx = super::CLIPBOARD_OUTGOING.subscribe();
+                                let _ = super::CLIPBOARD_TRANSPORT_CONNECTED.send(());
                                 // Active receive loop
                                 loop {
                                     tokio::select! {

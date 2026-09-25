@@ -34,6 +34,12 @@ pub static CLIPBOARD_INCOMING: LazyLock<broadcast::Sender<ClipboardMessage>> =
         tx
     });
 
+pub static CLIPBOARD_TRANSPORT_CONNECTED: LazyLock<broadcast::Sender<()>> =
+    LazyLock::new(|| {
+        let (tx, _) = broadcast::channel(2);
+        tx
+    });
+
 // A small utility function to initialize the OS clipboard loop.
 pub fn init_clipboard_task() {
     #[cfg(all(unix, not(target_os = "macos")))]
