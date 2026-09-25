@@ -302,22 +302,21 @@ impl ClipboardTask {
             }
 
             // If we didn't explicitly promote the image (because it's not an image-only HTML),
-            // we should enforce a sane default priority: text/html > text/plain > image.
-            // Prioritizing HTML preserves rich text. Prioritizing text over image prevents
-            // applications that put a CF_DIB thumbnail alongside rich text
-            // from causing the remote to fetch an image instead of the text.
+            // we should preserve the OS-provided priority for text formats (so apps like VSCode
+            // that want plain text first get it, while browsers that want HTML first get it),
+            // but we demote image types to prevent apps from sending thumbnails instead of text.
             if !image_promoted && mime_types.len() > 1 {
-                mime_types.sort_by_key(|m| {
-                    if m == "text/html" {
-                        0
-                    } else if m == "text/plain" {
-                        1
-                    } else if m.starts_with("image/") {
-                        2
+                let mut new_mimes = Vec::new();
+                let mut img_mimes = Vec::new();
+                for m in mime_types.drain(..) {
+                    if m.starts_with("image/") {
+                        img_mimes.push(m);
                     } else {
-                        3
+                        new_mimes.push(m);
                     }
-                });
+                }
+                new_mimes.extend(img_mimes);
+                mime_types = new_mimes;
             }
         }
         mime_types
