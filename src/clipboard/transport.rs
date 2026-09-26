@@ -112,6 +112,7 @@ pub async fn connect_clipboard(
 
     // 1. Establish TCP
     let tcp_stream = tokio::net::TcpStream::connect(addr).await?;
+    let _ = tcp_stream.set_nodelay(true);
 
     // 2. Setup TLS Config using existing certificate identity
     let cert_chain = cert.certificate.clone();
@@ -294,6 +295,7 @@ pub async fn listen_clipboard(
     // 2. Accept Loop
     loop {
         let (tcp_stream, peer_addr) = listener.accept().await?;
+        let _ = tcp_stream.set_nodelay(true);
         let acceptor = acceptor.clone();
 
         tokio::task::spawn_local(async move {

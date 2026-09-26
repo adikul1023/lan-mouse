@@ -165,6 +165,10 @@ impl ClipboardPortal for WlClipboardPortal {
                                 );
                                 continue;
                             }
+                            if crate::clipboard::file_task::EXPECTING_FILE_ECHO.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                                log::info!("[DEBUG LINUX] owner_changed ignored as file transfer echo");
+                                continue;
+                            }
                             log::info!("[DEBUG LINUX] owner_changed accepted as external change");
 
                             let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());

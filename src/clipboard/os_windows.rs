@@ -146,6 +146,9 @@ impl WindowsClipboardPortal {
                         "[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)"
                     );
                     continue;
+                } else if crate::clipboard::file_task::EXPECTING_FILE_ECHO.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file transfer echo");
+                    continue;
                 } else {
                     log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
                 }

@@ -30,6 +30,8 @@ struct ActiveIncomingTransfer {
     total_bytes_received: u64,
 }
 
+pub static EXPECTING_FILE_ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn init_file_task() {
     tokio::task::spawn_local(async {
         log::info!("Starting File Clipboard Task...");
@@ -544,6 +546,7 @@ async fn read_os_clipboard_files() -> Vec<PathBuf> {
 
 #[cfg(target_os = "windows")]
 async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
+    EXPECTING_FILE_ECHO.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         use clipboard_win::Setter;
         if let Ok(_clip) = clipboard_win::Clipboard::new_attempts(5) {
@@ -577,6 +580,7 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
     // Detach into an OS thread rather than a tokio blocking task.
     // This ensures wl_clipboard_rs's internal Wayland event loop is not inadvertently
     // interrupted by the Tokio runtime's lifecycle management.
+    EXPECTING_FILE_ECHO.store(true, std::sync::atomic::Ordering::SeqCst);
     std::thread::spawn(move || {
         let mut opts = wl_clipboard_rs::copy::Options::new();
         opts.foreground(true); // Keep ownership of the clipboard
