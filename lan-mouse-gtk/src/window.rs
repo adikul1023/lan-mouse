@@ -463,10 +463,18 @@ impl Window {
         let files_str = if total_files == 1 { "file".to_string() } else { format!("{} files", total_files) };
         let msg = format!("{} {} ({} bytes)...", direction, files_str, total_bytes);
         
+        // In-app toast overlay
         let toast = adw::Toast::new(&msg);
         toast.set_timeout(0); // Keep it open indefinitely until completion or failure
         self.add_toast(toast.clone());
         self.imp().active_transfers.borrow_mut().insert(transfer_id, toast);
+
+        // Desktop notification
+        if let Some(app) = self.application() {
+            let notification = gio::Notification::new(&format!("Lan Mouse: Transfer {}", direction));
+            notification.set_body(Some(&msg));
+            app.send_notification(Some(&format!("lan-mouse-transfer-{}", transfer_id)), &notification);
+        }
     }
 
     pub(super) fn transfer_progress(&self, transfer_id: u64, current_file_index: u64, current_filename: String, bytes_transferred: u64, current_speed_bps: u64) {
@@ -483,6 +491,12 @@ impl Window {
             toast.dismiss();
         }
         self.show_toast("Transfer completed successfully.");
+        
+        if let Some(app) = self.application() {
+            let notification = gio::Notification::new("Lan Mouse: Transfer Complete");
+            notification.set_body(Some("File transfer finished successfully."));
+            app.send_notification(Some(&format!("lan-mouse-transfer-{}", transfer_id)), &notification);
+        }
     }
 
     pub(super) fn transfer_failed(&self, transfer_id: u64, reason: String) {
@@ -490,6 +504,12 @@ impl Window {
             toast.dismiss();
         }
         self.show_toast(&format!("Transfer failed: {}", reason));
+        
+        if let Some(app) = self.application() {
+            let notification = gio::Notification::new("Lan Mouse: Transfer Failed");
+            notification.set_body(Some(&reason));
+            app.send_notification(Some(&format!("lan-mouse-transfer-{}", transfer_id)), &notification);
+        }
     }
 
     pub(super) fn set_capture(&self, active: bool) {
