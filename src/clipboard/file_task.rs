@@ -12,6 +12,7 @@ const MAX_FILENAME_LEN: usize = 255;
 struct ActiveOutgoingTransfer {
     id: u64,
     files: Vec<PathBuf>,
+    file_metadata: Vec<FileMetadata>,
     ack_tx: Option<tokio::sync::mpsc::Sender<(u64, u32, u64)>>,
 }
 
@@ -30,6 +31,8 @@ pub fn init_file_task() {
         log::info!("Starting File Clipboard Task...");
         let mut local_change_rx = super::LOCAL_CLIPBOARD_CHANGED.subscribe();
         let mut incoming_rx = super::CLIPBOARD_INCOMING.subscribe();
+
+        let mut transport_connected_rx = super::CLIPBOARD_TRANSPORT_CONNECTED.subscribe();
 
         let mut active_outgoing: Option<ActiveOutgoingTransfer> = None;
         let mut active_incoming: Option<ActiveIncomingTransfer> = None;
@@ -50,6 +53,15 @@ pub fn init_file_task() {
                 }
                 Ok(msg) = incoming_rx.recv() => {
                     handle_incoming_message(msg, &mut active_outgoing, &mut active_incoming).await;
+                }
+                Ok(_) = transport_connected_rx.recv() => {
+                    if let Some(outgoing) = &active_outgoing {
+                        log::info!("Transport connected, resending FileOffer {}", outgoing.id);
+                        let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileOffer {
+                            id: outgoing.id,
+                            files: outgoing.file_metadata.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -121,6 +133,7 @@ async fn handle_local_clipboard_change(active_outgoing: &mut Option<ActiveOutgoi
     *active_outgoing = Some(ActiveOutgoingTransfer {
         id,
         files: valid_files,
+        file_metadata: file_metadatas.clone(),
         ack_tx: None,
     });
 
