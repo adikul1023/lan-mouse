@@ -12,7 +12,7 @@ pub mod os_linux;
 #[cfg(target_os = "windows")]
 pub mod os_windows;
 
-use lan_mouse_ipc::ClientHandle;
+use lan_mouse_ipc::{ClientHandle, FrontendEvent};
 use protocol::ClipboardMessage;
 use std::sync::LazyLock;
 use tokio::sync::{broadcast, watch};
@@ -42,6 +42,11 @@ pub static CLIPBOARD_TRANSPORT_CONNECTED: LazyLock<broadcast::Sender<()>> = Lazy
 
 pub static LOCAL_CLIPBOARD_CHANGED: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| {
     let (tx, _) = broadcast::channel(4);
+    tx
+});
+
+pub static TRANSFER_EVENTS: LazyLock<broadcast::Sender<FrontendEvent>> = LazyLock::new(|| {
+    let (tx, _) = broadcast::channel(32);
     tx
 });
 

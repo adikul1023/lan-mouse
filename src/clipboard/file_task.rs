@@ -28,6 +28,7 @@ struct ActiveIncomingTransfer {
     total_write_time: std::time::Duration,
     total_hash_time: std::time::Duration,
     total_bytes_received: u64,
+    last_ui_update: std::time::Instant,
 }
 
 pub static EXPECTING_FILE_ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -136,11 +137,20 @@ async fn handle_local_clipboard_change(active_outgoing: &mut Option<ActiveOutgoi
         valid_files.len()
     );
 
+    let total_bytes = file_metadatas.iter().map(|f| f.size).sum();
     *active_outgoing = Some(ActiveOutgoingTransfer {
         id,
         files: valid_files,
         file_metadata: file_metadatas.clone(),
         ack_tx: None,
+    });
+
+    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferStarted {
+        transfer_id: id,
+        incoming: false,
+        total_files: file_metadatas.len() as u64,
+        total_bytes,
+        first_filename: file_metadatas.first().map(|f| f.name.clone()).unwrap_or_default(),
     });
 
     let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileOffer {
@@ -166,6 +176,7 @@ async fn handle_incoming_message(
                 return;
             }
 
+            let total_bytes = files.iter().map(|f| f.size).sum();
             *active_incoming = Some(ActiveIncomingTransfer {
                 id,
                 metadata: files.clone(),
@@ -178,6 +189,15 @@ async fn handle_incoming_message(
                 total_write_time: std::time::Duration::ZERO,
                 total_hash_time: std::time::Duration::ZERO,
                 total_bytes_received: 0,
+                last_ui_update: std::time::Instant::now(),
+            });
+
+            let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferStarted {
+                transfer_id: id,
+                incoming: true,
+                total_files: files.len() as u64,
+                total_bytes,
+                first_filename: files.first().map(|f| f.name.clone()).unwrap_or_default(),
             });
 
             let indices = (0..files.len() as u32).collect();
@@ -217,6 +237,7 @@ async fn handle_incoming_message(
                 let mut total_ack_wait_time = std::time::Duration::ZERO;
                 let mut min_ack_latency = std::time::Duration::MAX;
                 let mut max_ack_latency = std::time::Duration::ZERO;
+                let mut last_ui_update = std::time::Instant::now();
 
                 for (index, path) in files_to_send {
                     log::info!("Attempting to open file for transfer: {}", path.display());
@@ -263,10 +284,38 @@ async fn handle_incoming_message(
                                                 if ack_id != id || ack_idx != index || ack_off != offset {
                                                     log::warn!("Mismatched FileChunkAck: expected {id}:{index}:{offset}, got {ack_id}:{ack_idx}:{ack_off}");
                                                 }
+
+                                                if last_ui_update.elapsed().as_millis() >= 200 {
+                                                    last_ui_update = std::time::Instant::now();
+                                                    let elapsed_secs = start_time.elapsed().as_secs_f64();
+                                                    let speed = if elapsed_secs > 0.0 {
+                                                        (total_bytes_sent as f64 / elapsed_secs) as u64
+                                                    } else {
+                                                        0
+                                                    };
+                                                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+                                                    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferProgress {
+                                                        transfer_id: id,
+                                                        current_file_index: index as u64,
+                                                        current_filename: filename,
+                                                        bytes_transferred: total_bytes_sent,
+                                                        current_speed_bps: speed,
+                                                    });
+                                                }
                                             }
-                                            Ok(None) => return, // Cancelled
+                                            Ok(None) => {
+                                                let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferFailed {
+                                                    transfer_id: id,
+                                                    reason: "Cancelled".into(),
+                                                });
+                                                return; // Cancelled
+                                            }
                                             Err(_) => {
                                                 log::error!("Timeout waiting for FileChunkAck");
+                                                let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferFailed {
+                                                    transfer_id: id,
+                                                    reason: "Timeout waiting for ACK".into(),
+                                                });
                                                 let _ = super::CLIPBOARD_OUTGOING
                                                     .send(ClipboardMessage::Error { id, code: 504 });
                                                 return;
@@ -321,6 +370,10 @@ async fn handle_incoming_message(
                 log::info!("Total time waiting for ACKs: {:?}", total_ack_wait_time);
                 log::info!("Total read time: {:?}", total_read_time);
                 log::info!("Total hash time: {:?}", total_hash_time);
+
+                let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferCompleted {
+                    transfer_id: id,
+                });
             });
         }
         ClipboardMessage::FileChunk {
@@ -372,6 +425,24 @@ async fn handle_incoming_message(
                                     file_index,
                                     offset,
                                 });
+
+                                if transfer.last_ui_update.elapsed().as_millis() >= 200 {
+                                    transfer.last_ui_update = std::time::Instant::now();
+                                    let elapsed_secs = transfer.start_time.elapsed().as_secs_f64();
+                                    let speed = if elapsed_secs > 0.0 {
+                                        (transfer.total_bytes_received as f64 / elapsed_secs) as u64
+                                    } else {
+                                        0
+                                    };
+                                    let filename = transfer.metadata.get(file_index as usize).map(|f| f.name.clone()).unwrap_or_default();
+                                    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferProgress {
+                                        transfer_id: id,
+                                        current_file_index: file_index as u64,
+                                        current_filename: filename,
+                                        bytes_transferred: transfer.total_bytes_received,
+                                        current_speed_bps: speed,
+                                    });
+                                }
                             }
                         } else {
                             log::warn!(
@@ -460,6 +531,9 @@ async fn handle_incoming_message(
                         }
 
                         write_os_clipboard_files(final_paths).await;
+                        let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferCompleted {
+                            transfer_id: id,
+                        });
                         *active_incoming = None;
                     }
                 }
@@ -470,11 +544,19 @@ async fn handle_incoming_message(
                 if transfer.id == id {
                     log::warn!("Transfer failed, cleaning up temp dir");
                     let _ = tokio::fs::remove_dir_all(&transfer.temp_dir).await;
+                    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferFailed {
+                        transfer_id: id,
+                        reason: "Transfer Error".into(),
+                    });
                     *active_incoming = None;
                 }
             }
             if let Some(transfer) = active_outgoing {
                 if transfer.id == id {
+                    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferFailed {
+                        transfer_id: id,
+                        reason: "Transfer Error".into(),
+                    });
                     *active_outgoing = None;
                 }
             }

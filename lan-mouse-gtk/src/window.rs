@@ -458,6 +458,40 @@ impl Window {
         toast_overlay.add_toast(toast);
     }
 
+    pub(super) fn transfer_started(&self, transfer_id: u64, incoming: bool, total_files: u64, total_bytes: u64, first_filename: String) {
+        let direction = if incoming { "Receiving" } else { "Sending" };
+        let files_str = if total_files == 1 { "file".to_string() } else { format!("{} files", total_files) };
+        let msg = format!("{} {} ({} bytes)...", direction, files_str, total_bytes);
+        
+        let toast = adw::Toast::new(&msg);
+        toast.set_timeout(0); // Keep it open indefinitely until completion or failure
+        self.add_toast(toast.clone());
+        self.imp().active_transfers.borrow_mut().insert(transfer_id, toast);
+    }
+
+    pub(super) fn transfer_progress(&self, transfer_id: u64, current_file_index: u64, current_filename: String, bytes_transferred: u64, current_speed_bps: u64) {
+        if let Some(toast) = self.imp().active_transfers.borrow().get(&transfer_id) {
+            let speed_mbps = current_speed_bps as f64 / 1_000_000.0;
+            let mb_transferred = bytes_transferred as f64 / 1_000_000.0;
+            let msg = format!("Transferring: {} ({:.2} MB, {:.2} MB/s)", current_filename, mb_transferred, speed_mbps);
+            toast.set_title(&msg);
+        }
+    }
+
+    pub(super) fn transfer_completed(&self, transfer_id: u64) {
+        if let Some(toast) = self.imp().active_transfers.borrow_mut().remove(&transfer_id) {
+            toast.dismiss();
+        }
+        self.show_toast("Transfer completed successfully.");
+    }
+
+    pub(super) fn transfer_failed(&self, transfer_id: u64, reason: String) {
+        if let Some(toast) = self.imp().active_transfers.borrow_mut().remove(&transfer_id) {
+            toast.dismiss();
+        }
+        self.show_toast(&format!("Transfer failed: {}", reason));
+    }
+
     pub(super) fn set_capture(&self, active: bool) {
         self.imp().capture_active.replace(active);
         self.update_capture_emulation_status();

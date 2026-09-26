@@ -223,6 +223,26 @@ pub enum FrontendEvent {
     IncomingDisconnected(SocketAddr),
     /// failed connection attempt (approval for fingerprint required)
     ConnectionAttempt { fingerprint: String },
+    /// file transfer started
+    TransferStarted {
+        transfer_id: u64,
+        incoming: bool,
+        total_files: u64,
+        total_bytes: u64,
+        first_filename: String,
+    },
+    /// file transfer progress
+    TransferProgress {
+        transfer_id: u64,
+        current_file_index: u64,
+        current_filename: String,
+        bytes_transferred: u64,
+        current_speed_bps: u64,
+    },
+    /// file transfer completed successfully
+    TransferCompleted { transfer_id: u64 },
+    /// file transfer failed
+    TransferFailed { transfer_id: u64, reason: String },
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]

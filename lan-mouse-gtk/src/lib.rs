@@ -302,6 +302,30 @@ fn build_ui(app: &Application) {
                     FrontendEvent::IncomingDisconnected(addr) => {
                         window.show_toast(format!("{addr} disconnected").as_str());
                     }
+                    FrontendEvent::TransferStarted {
+                        transfer_id,
+                        incoming,
+                        total_files,
+                        total_bytes,
+                        first_filename,
+                    } => {
+                        window.transfer_started(transfer_id, incoming, total_files, total_bytes, first_filename);
+                    }
+                    FrontendEvent::TransferProgress {
+                        transfer_id,
+                        current_file_index,
+                        current_filename,
+                        bytes_transferred,
+                        current_speed_bps,
+                    } => {
+                        window.transfer_progress(transfer_id, current_file_index, current_filename, bytes_transferred, current_speed_bps);
+                    }
+                    FrontendEvent::TransferCompleted { transfer_id } => {
+                        window.transfer_completed(transfer_id);
+                    }
+                    FrontendEvent::TransferFailed { transfer_id, reason } => {
+                        window.transfer_failed(transfer_id, reason);
+                    }
                 }
             }
         }
