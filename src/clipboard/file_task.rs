@@ -484,12 +484,21 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
     tokio::task::spawn_blocking(move || {
         let mut uri_list = String::new();
         let mut gnome_copied = String::from("copy\n");
-        for path in paths {
+        
+        for (i, path) in paths.iter().enumerate() {
             if let Some(s) = path.to_str() {
+                // A very basic encoding for spaces. In a robust implementation,
+                // we'd use a full url-encoding scheme.
                 let encoded = s.replace(" ", "%20");
                 let uri = format!("file://{}", encoded);
-                uri_list.push_str(&format!("{}\r\n", uri));
-                gnome_copied.push_str(&format!("{}\n", uri));
+                
+                uri_list.push_str(&uri);
+                gnome_copied.push_str(&uri);
+                
+                if i < paths.len() - 1 {
+                    uri_list.push_str("\r\n");
+                    gnome_copied.push_str("\n");
+                }
             }
         }
 
@@ -508,6 +517,8 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
             },
         ];
 
-        let _ = opts.copy_multi(sources);
+        if let Err(e) = opts.copy_multi(sources) {
+            log::error!("Failed to write files to Wayland clipboard: {}", e);
+        }
     });
 }
