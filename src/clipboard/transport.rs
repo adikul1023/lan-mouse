@@ -224,6 +224,11 @@ pub async fn connect_clipboard(
                         "Clipboard received Data for id {id} (len: {}) from {addr}",
                         data.len()
                     );
+                } else if let ClipboardMessage::FileChunk { id, file_index, offset, data } = &msg {
+                    log::info!(
+                        "Clipboard received FileChunk for id {id} file {file_index} offset {offset} (len: {}) from {addr}",
+                        data.len()
+                    );
                 } else {
                     log::info!("Clipboard received from {addr}: {:?}", msg);
                 }
@@ -385,6 +390,11 @@ pub async fn listen_clipboard(
                                             if let ClipboardMessage::Data { id, data, .. } = &msg {
                                                 log::info!(
                                                     "Clipboard received Data for id {id} (len: {}) from {peer_addr}",
+                                                    data.len()
+                                                );
+                                            } else if let ClipboardMessage::FileChunk { id, file_index, offset, data } = &msg {
+                                                log::info!(
+                                                    "Clipboard received FileChunk for id {id} file {file_index} offset {offset} (len: {}) from {peer_addr}",
                                                     data.len()
                                                 );
                                             } else {

@@ -182,44 +182,53 @@ async fn handle_incoming_message(
 
             tokio::task::spawn_local(async move {
                 for (index, path) in files_to_send {
-                    if let Ok(mut file) = tokio::fs::File::open(&path).await {
-                        let mut buf = vec![0u8; CHUNK_SIZE];
-                        let mut offset = 0u64;
-                        let mut hasher = Sha256::new();
+                    log::info!("Attempting to open file for transfer: {}", path.display());
+                    match tokio::fs::File::open(&path).await {
+                        Ok(mut file) => {
+                            let mut buf = vec![0u8; CHUNK_SIZE];
+                            let mut offset = 0u64;
+                            let mut hasher = Sha256::new();
 
-                        loop {
-                            match file.read(&mut buf).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    hasher.update(&buf[..n]);
-                                    let chunk = ClipboardMessage::FileChunk {
-                                        id,
-                                        file_index: index,
-                                        offset,
-                                        data: buf[..n].to_vec(),
-                                    };
-                                    let _ = super::CLIPBOARD_OUTGOING.send(chunk);
-                                    offset += n as u64;
-                                }
-                                Err(e) => {
-                                    log::error!("Error reading file {}: {}", path.display(), e);
-                                    let _ = super::CLIPBOARD_OUTGOING
-                                        .send(ClipboardMessage::Error { id, code: 500 });
-                                    return;
+                            loop {
+                                match file.read(&mut buf).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        hasher.update(&buf[..n]);
+                                        let chunk = ClipboardMessage::FileChunk {
+                                            id,
+                                            file_index: index,
+                                            offset,
+                                            data: buf[..n].to_vec(),
+                                        };
+                                        let _ = super::CLIPBOARD_OUTGOING.send(chunk);
+                                        offset += n as u64;
+                                    }
+                                    Err(e) => {
+                                        log::error!("Error reading file {}: {}", path.display(), e);
+                                        let _ = super::CLIPBOARD_OUTGOING
+                                            .send(ClipboardMessage::Error { id, code: 500 });
+                                        return;
+                                    }
                                 }
                             }
+
+                            let hash = hasher.finalize();
+                            let mut hash_arr = [0u8; 32];
+                            hash_arr.copy_from_slice(&hash);
+
+                            log::info!("Finished reading file {}, sending FileComplete", path.display());
+                            let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileComplete {
+                                id,
+                                file_index: index,
+                                size: offset,
+                                sha256: hash_arr,
+                            });
                         }
-
-                        let hash = hasher.finalize();
-                        let mut hash_arr = [0u8; 32];
-                        hash_arr.copy_from_slice(&hash);
-
-                        let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileComplete {
-                            id,
-                            file_index: index,
-                            size: offset,
-                            sha256: hash_arr,
-                        });
+                        Err(e) => {
+                            log::error!("Failed to open file for transfer {}: {}", path.display(), e);
+                            let _ = super::CLIPBOARD_OUTGOING
+                                .send(ClipboardMessage::Error { id, code: 500 });
+                        }
                     }
                 }
             });
