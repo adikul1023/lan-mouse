@@ -33,6 +33,11 @@ struct ActiveIncomingTransfer {
 
 pub static EXPECTING_FILE_ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(target_os = "windows")]
+pub(crate) static FILE_IS_WRITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+pub(crate) static FILE_EXPECTED_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 pub fn init_file_task() {
     tokio::task::spawn_local(async {
         log::info!("Starting File Clipboard Task...");
@@ -137,20 +142,12 @@ async fn handle_local_clipboard_change(active_outgoing: &mut Option<ActiveOutgoi
         valid_files.len()
     );
 
-    let total_bytes = file_metadatas.iter().map(|f| f.size).sum();
+
     *active_outgoing = Some(ActiveOutgoingTransfer {
         id,
         files: valid_files,
         file_metadata: file_metadatas.clone(),
         ack_tx: None,
-    });
-
-    let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferStarted {
-        transfer_id: id,
-        incoming: false,
-        total_files: file_metadatas.len() as u64,
-        total_bytes,
-        first_filename: file_metadatas.first().map(|f| f.name.clone()).unwrap_or_default(),
     });
 
     let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileOffer {
@@ -227,6 +224,17 @@ async fn handle_incoming_message(
 
             let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(2);
             transfer.ack_tx = Some(ack_tx);
+
+            let total_bytes_to_send: u64 = transfer.file_metadata.iter().map(|f| f.size).sum();
+            let _ = crate::clipboard::TRANSFER_EVENTS.send(lan_mouse_ipc::FrontendEvent::TransferStarted {
+                transfer_id: id,
+                incoming: false,
+                total_files: files_to_send.len() as u64,
+                total_bytes: total_bytes_to_send,
+                first_filename: transfer.file_metadata.first().map(|f| f.name.clone()).unwrap_or_default(),
+            });
+
+
 
             tokio::task::spawn_local(async move {
                 let start_time = std::time::Instant::now();
@@ -628,7 +636,7 @@ async fn read_os_clipboard_files() -> Vec<PathBuf> {
 
 #[cfg(target_os = "windows")]
 async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
-    EXPECTING_FILE_ECHO.store(true, std::sync::atomic::Ordering::SeqCst);
+    FILE_IS_WRITING.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         use clipboard_win::Setter;
         let string_paths: Vec<String> = paths
@@ -647,6 +655,13 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
                     Ok(_) => {
                         log::info!("Successfully wrote files to Windows clipboard on attempt {}", i + 1);
                         success = true;
+                        
+                        #[link(name = "user32")]
+                        extern "system" {
+                            fn GetClipboardSequenceNumber() -> u32;
+                        }
+                        FILE_EXPECTED_SEQ.store(unsafe { GetClipboardSequenceNumber() }, std::sync::atomic::Ordering::SeqCst);
+                        
                         break;
                     }
                     Err(e) => {
@@ -661,6 +676,7 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
         if !success {
             log::error!("Failed to write files to Windows clipboard after 5 attempts");
         }
+        FILE_IS_WRITING.store(false, std::sync::atomic::Ordering::SeqCst);
     })
     .await
     .unwrap_or(());

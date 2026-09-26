@@ -142,16 +142,29 @@ impl WindowsClipboardPortal {
                 }
 
                 if is_echo {
-                    log::info!(
-                        "[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)"
-                    );
+                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)");
                     continue;
-                } else if crate::clipboard::file_task::EXPECTING_FILE_ECHO.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file transfer echo");
-                    continue;
-                } else {
-                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
                 }
+
+                if crate::clipboard::file_task::FILE_IS_WRITING.load(std::sync::atomic::Ordering::SeqCst) {
+                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file is currently writing");
+                    continue;
+                }
+
+                let expected_file_seq = crate::clipboard::file_task::FILE_EXPECTED_SEQ.load(std::sync::atomic::Ordering::SeqCst);
+                if expected_file_seq != 0 {
+                    let current_seq = unsafe { GetClipboardSequenceNumber() };
+                    if expected_file_seq == current_seq {
+                        crate::clipboard::file_task::FILE_EXPECTED_SEQ.store(0, std::sync::atomic::Ordering::SeqCst);
+                        log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file transfer echo");
+                        continue;
+                    } else if current_seq > expected_file_seq || (expected_file_seq - current_seq > 1000) {
+                        // Clear if we missed it
+                        crate::clipboard::file_task::FILE_EXPECTED_SEQ.store(0, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+
+                log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
 
                 // If not an echo, notify the task
                 let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
