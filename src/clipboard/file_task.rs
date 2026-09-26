@@ -24,6 +24,10 @@ struct ActiveIncomingTransfer {
     current_file_hasher: Option<Sha256>,
     current_file_written: u64,
     current_file_handle: Option<tokio::fs::File>,
+    start_time: std::time::Instant,
+    total_write_time: std::time::Duration,
+    total_hash_time: std::time::Duration,
+    total_bytes_received: u64,
 }
 
 pub fn init_file_task() {
@@ -168,6 +172,10 @@ async fn handle_incoming_message(
                 current_file_hasher: None,
                 current_file_written: 0,
                 current_file_handle: None,
+                start_time: std::time::Instant::now(),
+                total_write_time: std::time::Duration::ZERO,
+                total_hash_time: std::time::Duration::ZERO,
+                total_bytes_received: 0,
             });
 
             let indices = (0..files.len() as u32).collect();
@@ -199,6 +207,15 @@ async fn handle_incoming_message(
             transfer.ack_tx = Some(ack_tx);
 
             tokio::task::spawn_local(async move {
+                let start_time = std::time::Instant::now();
+                let mut total_bytes_sent = 0u64;
+                let mut chunk_count = 0u64;
+                let mut total_read_time = std::time::Duration::ZERO;
+                let mut total_hash_time = std::time::Duration::ZERO;
+                let mut total_ack_wait_time = std::time::Duration::ZERO;
+                let mut min_ack_latency = std::time::Duration::MAX;
+                let mut max_ack_latency = std::time::Duration::ZERO;
+
                 for (index, path) in files_to_send {
                     log::info!("Attempting to open file for transfer: {}", path.display());
                     match tokio::fs::File::open(&path).await {
@@ -208,10 +225,16 @@ async fn handle_incoming_message(
                             let mut hasher = Sha256::new();
 
                             loop {
+                                let read_start = std::time::Instant::now();
                                 match file.read(&mut buf).await {
                                     Ok(0) => break,
                                     Ok(n) => {
+                                        total_read_time += read_start.elapsed();
+
+                                        let hash_start = std::time::Instant::now();
                                         hasher.update(&buf[..n]);
+                                        total_hash_time += hash_start.elapsed();
+
                                         let chunk = ClipboardMessage::FileChunk {
                                             id,
                                             file_index: index,
@@ -220,6 +243,7 @@ async fn handle_incoming_message(
                                         };
                                         let _ = super::CLIPBOARD_OUTGOING.send(chunk);
 
+                                        let ack_start = std::time::Instant::now();
                                         match tokio::time::timeout(
                                             std::time::Duration::from_secs(10),
                                             ack_rx.recv(),
@@ -227,6 +251,13 @@ async fn handle_incoming_message(
                                         .await
                                         {
                                             Ok(Some((ack_id, ack_idx, ack_off))) => {
+                                                let ack_latency = ack_start.elapsed();
+                                                total_ack_wait_time += ack_latency;
+                                                min_ack_latency = min_ack_latency.min(ack_latency);
+                                                max_ack_latency = max_ack_latency.max(ack_latency);
+                                                chunk_count += 1;
+                                                total_bytes_sent += n as u64;
+
                                                 if ack_id != id || ack_idx != index || ack_off != offset {
                                                     log::warn!("Mismatched FileChunkAck: expected {id}:{index}:{offset}, got {ack_id}:{ack_idx}:{ack_off}");
                                                 }
@@ -270,6 +301,24 @@ async fn handle_incoming_message(
                         }
                     }
                 }
+                
+                let total_time = start_time.elapsed();
+                log::info!("=== SENDER TRANSFER STATS ===");
+                log::info!("Total time: {:?}", total_time);
+                log::info!("Total bytes: {}", total_bytes_sent);
+                if total_time.as_secs_f64() > 0.0 {
+                    log::info!("Throughput: {:.2} MB/s", (total_bytes_sent as f64 / 1_000_000.0) / total_time.as_secs_f64());
+                }
+                log::info!("Chunks: {}", chunk_count);
+                log::info!("Chunk size: {}", CHUNK_SIZE);
+                if chunk_count > 0 {
+                    log::info!("Avg ACK latency: {:?}", total_ack_wait_time / chunk_count as u32);
+                    log::info!("Min ACK latency: {:?}", min_ack_latency);
+                    log::info!("Max ACK latency: {:?}", max_ack_latency);
+                }
+                log::info!("Total time waiting for ACKs: {:?}", total_ack_wait_time);
+                log::info!("Total read time: {:?}", total_read_time);
+                log::info!("Total hash time: {:?}", total_hash_time);
             });
         }
         ClipboardMessage::FileChunk {
@@ -304,11 +353,18 @@ async fn handle_incoming_message(
 
                     if let Some(file) = &mut transfer.current_file_handle {
                         if transfer.current_file_written == offset {
+                            let write_start = std::time::Instant::now();
                             if let Ok(_) = file.write_all(&data).await {
+                                transfer.total_write_time += write_start.elapsed();
                                 transfer.current_file_written += data.len() as u64;
+                                transfer.total_bytes_received += data.len() as u64;
+
+                                let hash_start = std::time::Instant::now();
                                 if let Some(hasher) = &mut transfer.current_file_hasher {
                                     hasher.update(&data);
                                 }
+                                transfer.total_hash_time += hash_start.elapsed();
+
                                 let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileChunkAck {
                                     id,
                                     file_index,
@@ -384,6 +440,16 @@ async fn handle_incoming_message(
                     // Check if all files are complete
                     let is_last = file_index as usize == transfer.metadata.len() - 1;
                     if is_last {
+                        let total_time = transfer.start_time.elapsed();
+                        log::info!("=== RECEIVER TRANSFER STATS ===");
+                        log::info!("Total time: {:?}", total_time);
+                        log::info!("Total bytes: {}", transfer.total_bytes_received);
+                        if total_time.as_secs_f64() > 0.0 {
+                            log::info!("Throughput: {:.2} MB/s", (transfer.total_bytes_received as f64 / 1_000_000.0) / total_time.as_secs_f64());
+                        }
+                        log::info!("Total write time: {:?}", transfer.total_write_time);
+                        log::info!("Total hash time: {:?}", transfer.total_hash_time);
+
                         log::info!("All files complete, writing to OS clipboard.");
                         let mut final_paths = Vec::new();
                         for m in &transfer.metadata {
