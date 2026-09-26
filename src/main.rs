@@ -118,6 +118,7 @@ where
     Ok(runtime.block_on(LocalSet::new().run_until(f))?)
 }
 
+#[allow(dead_code)]
 fn start_service() -> Result<Child, io::Error> {
     let child = process::Command::new(std::env::current_exe()?)
         .args(std::env::args().skip(1))
@@ -132,21 +133,30 @@ async fn run_service(config: Config) -> Result<(), ServiceError> {
     let mut service = Service::new(config).await?;
     log::info!("using config: {config_path:?}");
     log::info!("Press {release_bind:?} to release the mouse");
-    
+
     #[cfg(target_os = "windows")]
     {
         let mut rx = lan_mouse::clipboard::TRANSFER_EVENTS.subscribe();
         tokio::task::spawn_local(async move {
             use lan_mouse_ipc::FrontendEvent;
             use winrt_notification::{Duration, Sound, Toast};
-            
+
             while let Ok(event) = rx.recv().await {
                 match event {
-                    FrontendEvent::TransferStarted { incoming, total_files, total_bytes, .. } => {
+                    FrontendEvent::TransferStarted {
+                        incoming,
+                        total_files,
+                        total_bytes,
+                        ..
+                    } => {
                         let direction = if incoming { "Receiving" } else { "Sending" };
-                        let files_str = if total_files == 1 { "file".to_string() } else { format!("{} files", total_files) };
+                        let files_str = if total_files == 1 {
+                            "file".to_string()
+                        } else {
+                            format!("{} files", total_files)
+                        };
                         let msg = format!("{} {} ({} bytes)...", direction, files_str, total_bytes);
-                        
+
                         let _ = Toast::new(Toast::POWERSHELL_APP_ID)
                             .title(&format!("Lan Mouse: Transfer {}", direction))
                             .text1(&msg)

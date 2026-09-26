@@ -106,10 +106,8 @@ pub fn is_image_only_html(html: &str) -> bool {
             in_tag = true;
         } else if c == '>' {
             in_tag = false;
-        } else if !in_tag {
-            if !c.is_whitespace() {
-                text_content.push(c);
-            }
+        } else if !in_tag && !c.is_whitespace() {
+            text_content.push(c);
         }
     }
 

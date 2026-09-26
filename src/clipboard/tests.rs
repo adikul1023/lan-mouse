@@ -521,7 +521,7 @@ fn test_v4_file_serialization() {
     let mut out = Vec::new();
     msg.encode(&mut out, 4).unwrap();
 
-    let decoded = ClipboardMessage::decode(out.as_slice()).unwrap();
+    let decoded = ClipboardMessage::decode(&mut out.as_slice()).unwrap();
     assert_eq!(msg, decoded);
 
     let msg_req = ClipboardMessage::FileRequest {
@@ -530,7 +530,7 @@ fn test_v4_file_serialization() {
     };
     let mut out = Vec::new();
     msg_req.encode(&mut out, 4).unwrap();
-    assert_eq!(msg_req, ClipboardMessage::decode(out.as_slice()).unwrap());
+    assert_eq!(msg_req, ClipboardMessage::decode(&mut out.as_slice()).unwrap());
 
     let msg_chunk = ClipboardMessage::FileChunk {
         id: 12345,
@@ -540,7 +540,7 @@ fn test_v4_file_serialization() {
     };
     let mut out = Vec::new();
     msg_chunk.encode(&mut out, 4).unwrap();
-    assert_eq!(msg_chunk, ClipboardMessage::decode(out.as_slice()).unwrap());
+    assert_eq!(msg_chunk, ClipboardMessage::decode(&mut out.as_slice()).unwrap());
 
     let msg_complete = ClipboardMessage::FileComplete {
         id: 12345,
@@ -552,6 +552,6 @@ fn test_v4_file_serialization() {
     msg_complete.encode(&mut out, 4).unwrap();
     assert_eq!(
         msg_complete,
-        ClipboardMessage::decode(out.as_slice()).unwrap()
+        ClipboardMessage::decode(&mut out.as_slice()).unwrap()
     );
 }

@@ -113,7 +113,7 @@ impl LanMouseListener {
         let tcp_listen_addr = SocketAddr::new("0.0.0.0".parse().expect("invalid ip"), port);
         if let Ok(tcp_listener) = tokio::net::TcpListener::bind(tcp_listen_addr).await {
             log::info!(
-                "[DEBUG TRANSPORT] Clipboard TCP listener successfully bound to {}",
+                "Clipboard TCP listener successfully bound to {}",
                 tcp_listen_addr
             );
             let tcp_cert = cert.clone();

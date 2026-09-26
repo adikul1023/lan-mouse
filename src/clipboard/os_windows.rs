@@ -38,13 +38,13 @@ fn decode_cf_html(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut found_end = false;
 
     for line in data_str.lines() {
-        if line.starts_with("StartFragment:") {
-            if let Ok(offset) = line["StartFragment:".len()..].trim().parse::<usize>() {
+        if let Some(stripped) = line.strip_prefix("StartFragment:") {
+            if let Ok(offset) = stripped.trim().parse::<usize>() {
                 start_fragment = offset;
                 found_start = true;
             }
-        } else if line.starts_with("EndFragment:") {
-            if let Ok(offset) = line["EndFragment:".len()..].trim().parse::<usize>() {
+        } else if let Some(stripped) = line.strip_prefix("EndFragment:") {
+            if let Ok(offset) = stripped.trim().parse::<usize>() {
                 end_fragment = offset;
                 found_end = true;
             }
@@ -111,6 +111,12 @@ pub struct WindowsClipboardPortal {
     suppressor: Arc<Mutex<EchoSuppressor>>,
 }
 
+impl Default for WindowsClipboardPortal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowsClipboardPortal {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
@@ -135,42 +141,55 @@ impl WindowsClipboardPortal {
                 // When we receive an event, check if it's an echo.
                 let mut is_echo = false;
 
-                log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE received");
+                log::info!("WM_CLIPBOARDUPDATE received");
 
                 if let Ok(mut supp) = suppressor_clone.lock() {
                     is_echo = supp.check_and_clear_echo();
                 }
 
                 if is_echo {
-                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as our own write (echo)");
+                    log::info!(
+                        "WM_CLIPBOARDUPDATE suppressed as our own write (echo)"
+                    );
                     continue;
                 }
 
-                if crate::clipboard::file_task::FILE_IS_WRITING.load(std::sync::atomic::Ordering::SeqCst) {
-                    log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file is currently writing");
+                if crate::clipboard::file_task::FILE_IS_WRITING
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    log::info!(
+                        "WM_CLIPBOARDUPDATE suppressed as file is currently writing"
+                    );
                     continue;
                 }
 
-                let expected_file_seq = crate::clipboard::file_task::FILE_EXPECTED_SEQ.load(std::sync::atomic::Ordering::SeqCst);
+                let expected_file_seq = crate::clipboard::file_task::FILE_EXPECTED_SEQ
+                    .load(std::sync::atomic::Ordering::SeqCst);
                 if expected_file_seq != 0 {
                     let current_seq = unsafe { GetClipboardSequenceNumber() };
                     if expected_file_seq == current_seq {
-                        crate::clipboard::file_task::FILE_EXPECTED_SEQ.store(0, std::sync::atomic::Ordering::SeqCst);
-                        log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE suppressed as file transfer echo");
+                        crate::clipboard::file_task::FILE_EXPECTED_SEQ
+                            .store(0, std::sync::atomic::Ordering::SeqCst);
+                        log::info!(
+                            "WM_CLIPBOARDUPDATE suppressed as file transfer echo"
+                        );
                         continue;
-                    } else if current_seq > expected_file_seq || (expected_file_seq - current_seq > 1000) {
+                    } else if current_seq > expected_file_seq
+                        || (expected_file_seq - current_seq > 1000)
+                    {
                         // Clear if we missed it
-                        crate::clipboard::file_task::FILE_EXPECTED_SEQ.store(0, std::sync::atomic::Ordering::SeqCst);
+                        crate::clipboard::file_task::FILE_EXPECTED_SEQ
+                            .store(0, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
 
-                log::info!("[DEBUG WINDOWS] WM_CLIPBOARDUPDATE accepted as external change");
+                log::info!("WM_CLIPBOARDUPDATE accepted as external change");
 
                 // If not an echo, notify the task
                 let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
                 if tx.blocking_send(()).is_err() {
                     log::info!(
-                        "[DEBUG WINDOWS] Clipboard portal owner_changed channel closed, terminating monitor."
+                        "Clipboard portal owner_changed channel closed, terminating monitor."
                     );
                     break;
                 }
@@ -287,7 +306,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            log::info!("[DEBUG WINDOWS] selection_read() invoked for mime {}", mime);
+            log::info!("selection_read() invoked for mime {}", mime);
             let data = if mime == "text/plain" {
                 let text: String =
                     tokio::task::spawn_blocking(|| clipboard_win::get_clipboard(formats::Unicode))
@@ -354,7 +373,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
                 ));
             }
             log::info!(
-                "[DEBUG WINDOWS] text length successfully read: {}",
+                "text length successfully read: {}",
                 data.len()
             );
             Ok(data)

@@ -11,6 +11,7 @@ pub struct ClipboardItem {
     pub data: Vec<u8>,
 }
 
+#[allow(clippy::type_complexity)]
 pub trait ClipboardPortal: Send + Sync {
     fn receive_selection_owner_changed(
         &self,
@@ -168,7 +169,7 @@ impl ClipboardTask {
         match msg {
             ClipboardMessage::Offer { id, mime_types } => {
                 log::info!(
-                    "[DEBUG TASK] Received clipboard offer (id={id}, mime_types={:?}) over TCP",
+                    "Received clipboard offer (id={id}, mime_types={:?}) over TCP",
                     mime_types
                 );
                 self.current_offer_id = id;
@@ -185,7 +186,7 @@ impl ClipboardTask {
 
                 if requested_mimes.is_empty() {
                     log::warn!(
-                        "[DEBUG TASK] No supported MIME types offered: {:?}",
+                        "No supported MIME types offered: {:?}",
                         mime_types
                     );
                     self.active_transfer = None;
@@ -201,7 +202,7 @@ impl ClipboardTask {
 
                 if portal.eager_fetch() {
                     log::info!(
-                        "[DEBUG TASK] Eager fetch enabled, generating Request for offer {id}"
+                        "Eager fetch enabled, generating Request for offer {id}"
                     );
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
                         id,
@@ -211,17 +212,17 @@ impl ClipboardTask {
 
                 for mime in requested_mimes {
                     if let Err(e) = portal.set_selection(&mime).await {
-                        log::warn!("[DEBUG TASK] Failed to set selection for {mime}: {e}");
+                        log::warn!("Failed to set selection for {mime}: {e}");
                     }
                 }
             }
             ClipboardMessage::Request { id, mime_types } => {
                 log::info!(
-                    "[DEBUG TASK] Request received over TCP for offer {id} ({:?})",
+                    "Request received over TCP for offer {id} ({:?})",
                     mime_types
                 );
                 if id != self.current_offer_id {
-                    log::warn!("[DEBUG TASK] Requested superseded offer {id}");
+                    log::warn!("Requested superseded offer {id}");
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 404 });
                     return;
                 }
@@ -230,7 +231,7 @@ impl ClipboardTask {
                     match portal.selection_read(&mime_type).await {
                         Ok(data) => {
                             log::info!(
-                                "[DEBUG TASK] Generating Data message for offer {id} ({mime_type})"
+                                "Generating Data message for offer {id} ({mime_type})"
                             );
                             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data {
                                 id,
@@ -252,22 +253,22 @@ impl ClipboardTask {
                 data,
             } => {
                 log::info!(
-                    "[DEBUG TASK] Data received over TCP for offer {id} ({mime_type}) with length {}",
+                    "Data received over TCP for offer {id} ({mime_type}) with length {}",
                     data.len()
                 );
 
                 let Some(transfer) = &mut self.active_transfer else {
-                    log::warn!("[DEBUG TASK] Received data but no active transfer");
+                    log::warn!("Received data but no active transfer");
                     return;
                 };
 
                 if transfer.id != id {
-                    log::warn!("[DEBUG TASK] Received data for mismatched offer {id}");
+                    log::warn!("Received data for mismatched offer {id}");
                     return;
                 }
 
                 if !transfer.expected_mimes.contains(&mime_type) {
-                    log::warn!("[DEBUG TASK] Received unrequested MIME type {mime_type}");
+                    log::warn!("Received unrequested MIME type {mime_type}");
                     return;
                 }
 
@@ -276,18 +277,18 @@ impl ClipboardTask {
                     .iter()
                     .any(|i| i.mime_type == mime_type)
                 {
-                    log::warn!("[DEBUG TASK] Received duplicate Data for {mime_type}");
+                    log::warn!("Received duplicate Data for {mime_type}");
                     return;
                 }
 
                 if data.len() > MAX_CLIPBOARD_ITEM_SIZE {
-                    log::warn!("[DEBUG TASK] Item size exceeded limit");
+                    log::warn!("Item size exceeded limit");
                     self.active_transfer = None;
                     return;
                 }
 
                 if transfer.total_bytes.saturating_add(data.len()) > MAX_CLIPBOARD_BUNDLE_SIZE {
-                    log::warn!("[DEBUG TASK] Aggregate clipboard size exceeded limit");
+                    log::warn!("Aggregate clipboard size exceeded limit");
                     self.active_transfer = None;
                     return;
                 }
@@ -299,13 +300,13 @@ impl ClipboardTask {
 
                 if transfer.received_items.len() == transfer.expected_mimes.len() {
                     log::info!(
-                        "[DEBUG TASK] All requested representations received. Committing clipboard."
+                        "All requested representations received. Committing clipboard."
                     );
                     let items = std::mem::take(&mut transfer.received_items);
                     self.active_transfer = None;
 
                     if let Err(e) = portal.selection_write(items).await {
-                        log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
+                        log::warn!("Failed to write selection to portal: {e}");
                     }
                 }
             }
@@ -322,7 +323,7 @@ impl ClipboardTask {
     }
 
     async fn handle_owner_changed(&mut self) {
-        log::info!("[DEBUG TASK] Clipboard owner-change event received");
+        log::info!("Clipboard owner-change event received");
         let id = self.next_offer_id;
         self.next_offer_id += 1;
         self.current_offer_id = id;
@@ -330,12 +331,14 @@ impl ClipboardTask {
         let mime_types = self.generate_offer_mime_types().await;
 
         if mime_types.is_empty() {
-            log::info!("[DEBUG TASK] No generic MIME types available, skipping Offer generation (likely file-only clipboard)");
+            log::info!(
+                "No generic MIME types available, skipping Offer generation (likely file-only clipboard)"
+            );
             return;
         }
 
         log::info!(
-            "[DEBUG TASK] Generating Offer (id={id}) with types: {:?}",
+            "Generating Offer (id={id}) with types: {:?}",
             mime_types
         );
         let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Offer { id, mime_types });
@@ -344,7 +347,7 @@ impl ClipboardTask {
     async fn handle_peer_connected(&mut self) {
         if self.current_offer_id > 0 {
             log::info!(
-                "[DEBUG TASK] Peer connected. Re-sending current Offer (id={})",
+                "Peer connected. Re-sending current Offer (id={})",
                 self.current_offer_id
             );
             let mime_types = self.generate_offer_mime_types().await;

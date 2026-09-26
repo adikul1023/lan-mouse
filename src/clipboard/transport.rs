@@ -195,10 +195,11 @@ pub async fn connect_clipboard(
                                     continue;
                                 }
                             }
-                            ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
-                                if !received_requests.lock().unwrap().contains(id) {
-                                    continue;
-                                }
+                            ClipboardMessage::Data { id, .. }
+                            | ClipboardMessage::Error { id, .. }
+                                if !received_requests.lock().unwrap().contains(id) =>
+                            {
+                                continue;
                             }
                             _ => {}
                         }
@@ -235,7 +236,13 @@ pub async fn connect_clipboard(
                         "Clipboard received Data for id {id} (len: {}) from {addr}",
                         data.len()
                     );
-                } else if let ClipboardMessage::FileChunk { id, file_index, offset, data } = &msg {
+                } else if let ClipboardMessage::FileChunk {
+                    id,
+                    file_index,
+                    offset,
+                    data,
+                } = &msg
+                {
                     log::info!(
                         "Clipboard received FileChunk for id {id} file {file_index} offset {offset} (len: {}) from {addr}",
                         data.len()
@@ -364,14 +371,13 @@ pub async fn listen_clipboard(
                                                             }
                                                         }
                                                         ClipboardMessage::Data { id, .. }
-                                                        | ClipboardMessage::Error { id, .. } => {
+                                                        | ClipboardMessage::Error { id, .. }
                                                             if !received_requests
                                                                 .lock()
                                                                 .unwrap()
-                                                                .contains(id)
-                                                            {
-                                                                continue;
-                                                            }
+                                                                .contains(id) =>
+                                                        {
+                                                            continue;
                                                         }
                                                         _ => {}
                                                     }
@@ -414,7 +420,13 @@ pub async fn listen_clipboard(
                                                     "Clipboard received Data for id {id} (len: {}) from {peer_addr}",
                                                     data.len()
                                                 );
-                                            } else if let ClipboardMessage::FileChunk { id, file_index, offset, data } = &msg {
+                                            } else if let ClipboardMessage::FileChunk {
+                                                id,
+                                                file_index,
+                                                offset,
+                                                data,
+                                            } = &msg
+                                            {
                                                 log::info!(
                                                     "Clipboard received FileChunk for id {id} file {file_index} offset {offset} (len: {}) from {peer_addr}",
                                                     data.len()
