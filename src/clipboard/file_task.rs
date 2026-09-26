@@ -483,44 +483,49 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
 async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
     let mut uri_list = String::new();
     
-    for (i, path) in paths.iter().enumerate() {
+    for path in paths.iter() {
         if let Some(s) = path.to_str() {
-            // A very basic encoding for spaces. In a robust implementation,
-            // we'd use a full url-encoding scheme.
+            // Basic url-encoding for spaces
             let encoded = s.replace(" ", "%20");
             let uri = format!("file://{}", encoded);
             
             uri_list.push_str(&uri);
-            
-            // Separate multiple files with CRLF
-            if i < paths.len() - 1 {
-                uri_list.push_str("\r\n");
+            // Dolphin Native Copy always terminates every URI line (including the last one) with CRLF.
+            uri_list.push_str("\r\n");
+        }
+    }
+
+    // Detach into an OS thread rather than a tokio blocking task.
+    // This ensures wl_clipboard_rs's internal Wayland event loop is not inadvertently
+    // interrupted by the Tokio runtime's lifecycle management.
+    std::thread::spawn(move || {
+        let mut opts = wl_clipboard_rs::copy::Options::new();
+        opts.foreground(true); // Keep ownership of the clipboard
+
+        // Provide the exact MIME types Dolphin advertised in the control experiment
+        let sources = vec![
+            wl_clipboard_rs::copy::MimeSource {
+                mime_type: wl_clipboard_rs::copy::MimeType::Specific("text/uri-list".to_string()),
+                source: wl_clipboard_rs::copy::Source::Bytes(uri_list.clone().into_bytes().into()),
+            },
+            wl_clipboard_rs::copy::MimeSource {
+                mime_type: wl_clipboard_rs::copy::MimeType::Specific(
+                    "application/x-kde4-urilist".to_string(),
+                ),
+                source: wl_clipboard_rs::copy::Source::Bytes(uri_list.into_bytes().into()),
+            },
+            wl_clipboard_rs::copy::MimeSource {
+                mime_type: wl_clipboard_rs::copy::MimeType::Specific(
+                    "application/vnd.portal.filetransfer".to_string(),
+                ),
+                // XDG portal filetransfer relies on a session token, but providing an empty payload 
+                // or just the URI list often satisfies listeners looking for the MIME signature.
+                source: wl_clipboard_rs::copy::Source::Bytes(Vec::new().into()),
             }
-        }
-    }
+        ];
 
-    // Shell out to wl-copy, matching our wl-paste strategy.
-    // wl-copy automatically forks into the background and serves the clipboard,
-    // avoiding the Wayland event loop drop issues of wl_clipboard_rs in a blocking thread.
-    let mut child = match tokio::process::Command::new("wl-copy")
-        .arg("--type")
-        .arg("text/uri-list")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to spawn wl-copy: {}", e);
-            return;
+        if let Err(e) = opts.copy_multi(sources) {
+            log::error!("Failed to write files to Wayland clipboard: {}", e);
         }
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        if let Err(e) = stdin.write_all(uri_list.as_bytes()).await {
-            log::error!("Failed to write to wl-copy stdin: {}", e);
-        }
-    }
-
-    let _ = child.wait().await;
+    });
 }
