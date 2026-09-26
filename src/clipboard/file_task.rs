@@ -635,13 +635,31 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
             .into_iter()
             .filter_map(|p| p.to_str().map(|s| s.to_string()))
             .collect();
+            
+        log::info!("Attempting to write paths to Windows clipboard: {:?}", string_paths);
 
         // Retry writing up to 5 times since clipboard can be temporarily locked
-        for _ in 0..5 {
-            if clipboard_win::formats::FileList.write_clipboard(&string_paths).is_ok() {
-                break;
+        let mut success = false;
+        for i in 0..5 {
+            if let Ok(_clip) = clipboard_win::Clipboard::new() {
+                let _ = clipboard_win::empty();
+                match clipboard_win::formats::FileList.write_clipboard(&string_paths) {
+                    Ok(_) => {
+                        log::info!("Successfully wrote files to Windows clipboard on attempt {}", i + 1);
+                        success = true;
+                        break;
+                    }
+                    Err(e) => {
+                        log::error!("Attempt {} to write clipboard failed: {}", i + 1, e);
+                    }
+                }
+            } else {
+                log::error!("Attempt {} failed to open clipboard", i + 1);
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !success {
+            log::error!("Failed to write files to Windows clipboard after 5 attempts");
         }
     })
     .await
