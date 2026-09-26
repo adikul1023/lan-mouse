@@ -393,9 +393,6 @@ impl ClipboardPortal for WindowsClipboardPortal {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
 
-            if available.is_empty() {
-                available.push("text/plain".to_string()); // fallback
-            }
             Ok(available)
         })
     }

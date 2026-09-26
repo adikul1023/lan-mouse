@@ -434,22 +434,31 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
 async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
     tokio::task::spawn_blocking(move || {
         let mut uri_list = String::new();
+        let mut gnome_copied = String::from("copy\n");
         for path in paths {
             if let Some(s) = path.to_str() {
                 let encoded = s.replace(" ", "%20");
-                uri_list.push_str(&format!("file://{}\r\n", encoded));
+                let uri = format!("file://{}", encoded);
+                uri_list.push_str(&format!("{}\r\n", uri));
+                gnome_copied.push_str(&format!("{}\n", uri));
             }
         }
 
         let mut opts = wl_clipboard_rs::copy::Options::new();
         opts.foreground(true);
-        let sources = vec![wl_clipboard_rs::copy::MimeSource {
-            mime_type: wl_clipboard_rs::copy::MimeType::Specific("text/uri-list".to_string()),
-            source: wl_clipboard_rs::copy::Source::Bytes(uri_list.into_bytes().into()),
-        }];
+        let sources = vec![
+            wl_clipboard_rs::copy::MimeSource {
+                mime_type: wl_clipboard_rs::copy::MimeType::Specific("text/uri-list".to_string()),
+                source: wl_clipboard_rs::copy::Source::Bytes(uri_list.into_bytes().into()),
+            },
+            wl_clipboard_rs::copy::MimeSource {
+                mime_type: wl_clipboard_rs::copy::MimeType::Specific(
+                    "x-special/gnome-copied-files".to_string(),
+                ),
+                source: wl_clipboard_rs::copy::Source::Bytes(gnome_copied.into_bytes().into()),
+            },
+        ];
 
         let _ = opts.copy_multi(sources);
-    })
-    .await
-    .unwrap_or(());
+    });
 }

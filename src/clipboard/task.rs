@@ -369,11 +369,9 @@ impl ClipboardTask {
     async fn generate_offer_mime_types(&self) -> Vec<String> {
         if let Some(portal) = &self.portal {
             if let Ok(available) = portal.get_available_mime_types().await {
-                if !available.is_empty() {
-                    return available;
-                }
+                return available;
             }
         }
-        vec!["text/plain".to_string()]
+        Vec::new()
     }
 }

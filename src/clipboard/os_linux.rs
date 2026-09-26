@@ -318,9 +318,6 @@ impl ClipboardPortal for WlClipboardPortal {
                     }
                 }
             }
-            if types.is_empty() {
-                types.push("text/plain".to_string());
-            }
             Ok(types)
         })
     }
