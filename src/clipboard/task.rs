@@ -1,7 +1,7 @@
 use futures::{Stream, StreamExt};
+use std::collections::HashSet;
 use std::pin::Pin;
 use tokio::sync::watch;
-use std::collections::HashSet;
 
 use super::CLIPBOARD_OUTGOING;
 use super::protocol::ClipboardMessage;
@@ -26,12 +26,12 @@ pub trait ClipboardPortal: Send + Sync {
         &'a self,
         items: Vec<ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
-    
+
     fn selection_read<'a>(
         &'a self,
         mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
-    
+
     fn set_selection<'a>(
         &'a self,
         mime: &'a str,
@@ -81,10 +81,15 @@ impl ClipboardTask {
         F: Fn(S) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Option<Box<dyn ClipboardPortal>>> + Send,
     {
+        let unique_start_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         let mut task = Self {
             portal: None,
             current_offer_id: 0,
-            next_offer_id: 1,
+            next_offer_id: unique_start_id,
             active_transfer: None,
         };
 
@@ -211,17 +216,22 @@ impl ClipboardTask {
                 }
             }
             ClipboardMessage::Request { id, mime_types } => {
-                log::info!("[DEBUG TASK] Request received over TCP for offer {id} ({:?})", mime_types);
+                log::info!(
+                    "[DEBUG TASK] Request received over TCP for offer {id} ({:?})",
+                    mime_types
+                );
                 if id != self.current_offer_id {
                     log::warn!("[DEBUG TASK] Requested superseded offer {id}");
                     let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 404 });
                     return;
                 }
-                
+
                 for mime_type in mime_types {
                     match portal.selection_read(&mime_type).await {
                         Ok(data) => {
-                            log::info!("[DEBUG TASK] Generating Data message for offer {id} ({mime_type})");
+                            log::info!(
+                                "[DEBUG TASK] Generating Data message for offer {id} ({mime_type})"
+                            );
                             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Data {
                                 id,
                                 mime_type,
@@ -230,7 +240,8 @@ impl ClipboardTask {
                         }
                         Err(e) => {
                             log::warn!("Failed to read selection {mime_type} from portal: {e}");
-                            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 500 });
+                            let _ =
+                                CLIPBOARD_OUTGOING.send(ClipboardMessage::Error { id, code: 500 });
                         }
                     }
                 }
@@ -244,7 +255,7 @@ impl ClipboardTask {
                     "[DEBUG TASK] Data received over TCP for offer {id} ({mime_type}) with length {}",
                     data.len()
                 );
-                
+
                 let Some(transfer) = &mut self.active_transfer else {
                     log::warn!("[DEBUG TASK] Received data but no active transfer");
                     return;
@@ -254,37 +265,45 @@ impl ClipboardTask {
                     log::warn!("[DEBUG TASK] Received data for mismatched offer {id}");
                     return;
                 }
-                
+
                 if !transfer.expected_mimes.contains(&mime_type) {
                     log::warn!("[DEBUG TASK] Received unrequested MIME type {mime_type}");
                     return;
                 }
-                
-                if transfer.received_items.iter().any(|i| i.mime_type == mime_type) {
+
+                if transfer
+                    .received_items
+                    .iter()
+                    .any(|i| i.mime_type == mime_type)
+                {
                     log::warn!("[DEBUG TASK] Received duplicate Data for {mime_type}");
                     return;
                 }
-                
+
                 if data.len() > MAX_CLIPBOARD_ITEM_SIZE {
                     log::warn!("[DEBUG TASK] Item size exceeded limit");
                     self.active_transfer = None;
                     return;
                 }
-                
+
                 if transfer.total_bytes.saturating_add(data.len()) > MAX_CLIPBOARD_BUNDLE_SIZE {
                     log::warn!("[DEBUG TASK] Aggregate clipboard size exceeded limit");
                     self.active_transfer = None;
                     return;
                 }
-                
+
                 transfer.total_bytes += data.len();
-                transfer.received_items.push(ClipboardItem { mime_type, data });
-                
+                transfer
+                    .received_items
+                    .push(ClipboardItem { mime_type, data });
+
                 if transfer.received_items.len() == transfer.expected_mimes.len() {
-                    log::info!("[DEBUG TASK] All requested representations received. Committing clipboard.");
+                    log::info!(
+                        "[DEBUG TASK] All requested representations received. Committing clipboard."
+                    );
                     let items = std::mem::take(&mut transfer.received_items);
                     self.active_transfer = None;
-                    
+
                     if let Err(e) = portal.selection_write(items).await {
                         log::warn!("[DEBUG TASK] Failed to write selection to portal: {e}");
                     }
@@ -340,13 +359,13 @@ impl ClipboardTask {
                 mime_types: mimes,
             });
         } else {
-             let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
+            let _ = CLIPBOARD_OUTGOING.send(ClipboardMessage::Request {
                 id: self.current_offer_id,
                 mime_types: vec!["text/plain".to_string()],
             });
         }
     }
-    
+
     async fn generate_offer_mime_types(&self) -> Vec<String> {
         if let Some(portal) = &self.portal {
             if let Ok(available) = portal.get_available_mime_types().await {

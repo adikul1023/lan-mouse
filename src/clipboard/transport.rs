@@ -139,9 +139,9 @@ pub async fn connect_clipboard(
 
     // 4. Send Protocol Hello
     let hello = ClipboardMessage::Hello {
-        protocol_version: 3,
+        protocol_version: 4,
     };
-    write_message(&mut tls_stream, &hello, 3).await?;
+    write_message(&mut tls_stream, &hello, 4).await?;
 
     // Wait for HelloAck from Server
     let session_version = match tokio::time::timeout(
@@ -310,7 +310,7 @@ pub async fn listen_clipboard(
                         Ok(Ok(ClipboardMessage::Hello { protocol_version })) => {
                             log::info!("Clipboard Hello from {peer_addr} (v{protocol_version})");
 
-                            let session_version = std::cmp::min(protocol_version, 3);
+                            let session_version = std::cmp::min(protocol_version, 4);
 
                             let ack = ClipboardMessage::HelloAck {
                                 protocol_version: session_version,

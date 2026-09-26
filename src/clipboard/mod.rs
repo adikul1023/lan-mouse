@@ -2,6 +2,7 @@ pub mod auth;
 pub mod protocol;
 pub mod transport;
 
+pub mod file_task;
 pub mod task;
 pub mod tests;
 
@@ -39,6 +40,11 @@ pub static CLIPBOARD_TRANSPORT_CONNECTED: LazyLock<broadcast::Sender<()>> = Lazy
     tx
 });
 
+pub static LOCAL_CLIPBOARD_CHANGED: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| {
+    let (tx, _) = broadcast::channel(4);
+    tx
+});
+
 // A small utility function to initialize the OS clipboard loop.
 pub fn init_clipboard_task() {
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -50,6 +56,8 @@ pub fn init_clipboard_task() {
     {
         os_windows::init_clipboard_task();
     }
+
+    file_task::init_file_task();
 }
 
 pub fn validate_image_dimensions(data: &[u8]) -> Result<(), String> {

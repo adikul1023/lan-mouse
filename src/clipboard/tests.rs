@@ -499,3 +499,59 @@ fn test_is_image_only_html() {
     let plain_html_text = "<b>Just bold text</b>";
     assert!(!super::is_image_only_html(plain_html_text));
 }
+
+#[test]
+fn test_v4_file_serialization() {
+    use super::protocol::{ClipboardMessage, FileMetadata};
+
+    let msg = ClipboardMessage::FileOffer {
+        id: 12345,
+        files: vec![
+            FileMetadata {
+                name: "test1.txt".to_string(),
+                size: 1024,
+            },
+            FileMetadata {
+                name: "image.png".to_string(),
+                size: 1000000,
+            },
+        ],
+    };
+
+    let mut out = Vec::new();
+    msg.encode(&mut out, 4).unwrap();
+
+    let decoded = ClipboardMessage::decode(out.as_slice()).unwrap();
+    assert_eq!(msg, decoded);
+
+    let msg_req = ClipboardMessage::FileRequest {
+        id: 12345,
+        file_indices: vec![0, 1],
+    };
+    let mut out = Vec::new();
+    msg_req.encode(&mut out, 4).unwrap();
+    assert_eq!(msg_req, ClipboardMessage::decode(out.as_slice()).unwrap());
+
+    let msg_chunk = ClipboardMessage::FileChunk {
+        id: 12345,
+        file_index: 1,
+        offset: 2048,
+        data: vec![1, 2, 3, 4, 5],
+    };
+    let mut out = Vec::new();
+    msg_chunk.encode(&mut out, 4).unwrap();
+    assert_eq!(msg_chunk, ClipboardMessage::decode(out.as_slice()).unwrap());
+
+    let msg_complete = ClipboardMessage::FileComplete {
+        id: 12345,
+        file_index: 1,
+        size: 1000000,
+        sha256: [42; 32],
+    };
+    let mut out = Vec::new();
+    msg_complete.encode(&mut out, 4).unwrap();
+    assert_eq!(
+        msg_complete,
+        ClipboardMessage::decode(out.as_slice()).unwrap()
+    );
+}

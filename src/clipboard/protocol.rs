@@ -41,6 +41,32 @@ pub enum ClipboardMessage {
         id: u64,
         code: u16,
     },
+    FileOffer {
+        id: u64,
+        files: Vec<FileMetadata>,
+    },
+    FileRequest {
+        id: u64,
+        file_indices: Vec<u32>,
+    },
+    FileChunk {
+        id: u64,
+        file_index: u32,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    FileComplete {
+        id: u64,
+        file_index: u32,
+        size: u64,
+        sha256: [u8; 32],
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct FileMetadata {
+    pub name: String,
+    pub size: u64,
 }
 
 impl ClipboardMessage {
@@ -54,6 +80,10 @@ impl ClipboardMessage {
     pub const MSG_REQUEST_V2: u8 = 8;
     pub const MSG_DATA_V2: u8 = 9;
     pub const MSG_REQUEST_V3: u8 = 10;
+    pub const MSG_FILE_OFFER: u8 = 11;
+    pub const MSG_FILE_REQUEST: u8 = 12;
+    pub const MSG_FILE_CHUNK: u8 = 13;
+    pub const MSG_FILE_COMPLETE: u8 = 14;
 
     pub fn encode(&self, out: &mut impl Write, version: u16) -> io::Result<()> {
         match self {
@@ -136,6 +166,61 @@ impl ClipboardMessage {
                 out.write_all(&[Self::MSG_ERROR])?;
                 out.write_all(&id.to_be_bytes())?;
                 out.write_all(&code.to_be_bytes())?;
+            }
+            ClipboardMessage::FileOffer { id, files } => {
+                if version >= 4 {
+                    out.write_all(&[Self::MSG_FILE_OFFER])?;
+                    out.write_all(&id.to_be_bytes())?;
+                    let count = std::cmp::min(files.len(), 10_000) as u32;
+                    out.write_all(&count.to_be_bytes())?;
+                    for f in files.iter().take(count as usize) {
+                        let bytes = f.name.as_bytes();
+                        let len = std::cmp::min(bytes.len(), 255) as u8;
+                        out.write_all(&[len])?;
+                        out.write_all(&bytes[..len as usize])?;
+                        out.write_all(&f.size.to_be_bytes())?;
+                    }
+                }
+            }
+            ClipboardMessage::FileRequest { id, file_indices } => {
+                if version >= 4 {
+                    out.write_all(&[Self::MSG_FILE_REQUEST])?;
+                    out.write_all(&id.to_be_bytes())?;
+                    let count = std::cmp::min(file_indices.len(), 10_000) as u32;
+                    out.write_all(&count.to_be_bytes())?;
+                    for index in file_indices.iter().take(count as usize) {
+                        out.write_all(&index.to_be_bytes())?;
+                    }
+                }
+            }
+            ClipboardMessage::FileChunk {
+                id,
+                file_index,
+                offset,
+                data,
+            } => {
+                if version >= 4 {
+                    out.write_all(&[Self::MSG_FILE_CHUNK])?;
+                    out.write_all(&id.to_be_bytes())?;
+                    out.write_all(&file_index.to_be_bytes())?;
+                    out.write_all(&offset.to_be_bytes())?;
+                    out.write_all(&(data.len() as u32).to_be_bytes())?;
+                    out.write_all(data)?;
+                }
+            }
+            ClipboardMessage::FileComplete {
+                id,
+                file_index,
+                size,
+                sha256,
+            } => {
+                if version >= 4 {
+                    out.write_all(&[Self::MSG_FILE_COMPLETE])?;
+                    out.write_all(&id.to_be_bytes())?;
+                    out.write_all(&file_index.to_be_bytes())?;
+                    out.write_all(&size.to_be_bytes())?;
+                    out.write_all(sha256)?;
+                }
             }
         }
         Ok(())
@@ -279,6 +364,97 @@ impl ClipboardMessage {
                 Ok(ClipboardMessage::Error {
                     id: u64::from_be_bytes(id_b),
                     code: u16::from_be_bytes(code_b),
+                })
+            }
+            Self::MSG_FILE_OFFER => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut count_b = [0u8; 4];
+                src.read_exact(&mut count_b)?;
+                let count = u32::from_be_bytes(count_b);
+                if count > 10_000 {
+                    return Err(ProtocolError::InvalidMessageType(Self::MSG_FILE_OFFER));
+                }
+                let mut files = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let mut len_b = [0u8; 1];
+                    src.read_exact(&mut len_b)?;
+                    let len = len_b[0] as usize;
+                    let mut name_b = vec![0u8; len];
+                    src.read_exact(&mut name_b)?;
+                    let name = String::from_utf8(name_b)?;
+                    let mut size_b = [0u8; 8];
+                    src.read_exact(&mut size_b)?;
+                    files.push(FileMetadata {
+                        name,
+                        size: u64::from_be_bytes(size_b),
+                    });
+                }
+                Ok(ClipboardMessage::FileOffer {
+                    id: u64::from_be_bytes(id_b),
+                    files,
+                })
+            }
+            Self::MSG_FILE_REQUEST => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut count_b = [0u8; 4];
+                src.read_exact(&mut count_b)?;
+                let count = u32::from_be_bytes(count_b);
+                if count > 10_000 {
+                    return Err(ProtocolError::InvalidMessageType(Self::MSG_FILE_REQUEST));
+                }
+                let mut file_indices = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let mut idx_b = [0u8; 4];
+                    src.read_exact(&mut idx_b)?;
+                    file_indices.push(u32::from_be_bytes(idx_b));
+                }
+                Ok(ClipboardMessage::FileRequest {
+                    id: u64::from_be_bytes(id_b),
+                    file_indices,
+                })
+            }
+            Self::MSG_FILE_CHUNK => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut idx_b = [0u8; 4];
+                src.read_exact(&mut idx_b)?;
+                let mut off_b = [0u8; 8];
+                src.read_exact(&mut off_b)?;
+                let mut len_b = [0u8; 4];
+                src.read_exact(&mut len_b)?;
+                let len = u32::from_be_bytes(len_b) as usize;
+
+                // Safety check: chunk shouldn't be insanely large. Let's bound it to frame size (100MB).
+                // In practice we use 256KB chunks.
+                if len as u32 > crate::clipboard::transport::MAX_CLIPBOARD_FRAME_SIZE {
+                    return Err(ProtocolError::FrameTooLarge(len as u32));
+                }
+
+                let mut data = vec![0u8; len];
+                src.read_exact(&mut data)?;
+                Ok(ClipboardMessage::FileChunk {
+                    id: u64::from_be_bytes(id_b),
+                    file_index: u32::from_be_bytes(idx_b),
+                    offset: u64::from_be_bytes(off_b),
+                    data,
+                })
+            }
+            Self::MSG_FILE_COMPLETE => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut idx_b = [0u8; 4];
+                src.read_exact(&mut idx_b)?;
+                let mut size_b = [0u8; 8];
+                src.read_exact(&mut size_b)?;
+                let mut sha256 = [0u8; 32];
+                src.read_exact(&mut sha256)?;
+                Ok(ClipboardMessage::FileComplete {
+                    id: u64::from_be_bytes(id_b),
+                    file_index: u32::from_be_bytes(idx_b),
+                    size: u64::from_be_bytes(size_b),
+                    sha256,
                 })
             }
             t => Err(ProtocolError::InvalidMessageType(t)),

@@ -41,6 +41,7 @@ impl ClipboardPortal for AshpdClipboardPortal {
                 {
                     tokio::pin!(stream);
                     while let Some(_) = stream.next().await {
+                        let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
                         if tx.send(()).await.is_err() {
                             break;
                         }
@@ -111,7 +112,8 @@ impl ClipboardPortal for AshpdClipboardPortal {
 }
 
 pub struct WlClipboardPortal {
-    current_copy_child: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
+    current_copy_child:
+        std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>,
 }
 
 impl WlClipboardPortal {
@@ -165,6 +167,7 @@ impl ClipboardPortal for WlClipboardPortal {
                             }
                             log::info!("[DEBUG LINUX] owner_changed accepted as external change");
 
+                            let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
                             if tx.send(()).await.is_err() {
                                 break;
                             }
@@ -207,16 +210,15 @@ impl ClipboardPortal for WlClipboardPortal {
                         }
                     }
                     if item.mime_type == "text/plain" {
-                        let aliases = [
-                            "UTF8_STRING",
-                            "STRING",
-                            "TEXT",
-                            "text/plain;charset=utf-8",
-                        ];
+                        let aliases = ["UTF8_STRING", "STRING", "TEXT", "text/plain;charset=utf-8"];
                         for alias in aliases {
                             sources.push(wl_clipboard_rs::copy::MimeSource {
-                                mime_type: wl_clipboard_rs::copy::MimeType::Specific(alias.to_string()),
-                                source: wl_clipboard_rs::copy::Source::Bytes(item.data.clone().into()),
+                                mime_type: wl_clipboard_rs::copy::MimeType::Specific(
+                                    alias.to_string(),
+                                ),
+                                source: wl_clipboard_rs::copy::Source::Bytes(
+                                    item.data.clone().into(),
+                                ),
                             });
                         }
                         sources.push(wl_clipboard_rs::copy::MimeSource {
@@ -235,9 +237,10 @@ impl ClipboardPortal for WlClipboardPortal {
                     return Ok(());
                 }
 
-                opts.copy_multi(sources).map_err(|e| format!("wl-clipboard-rs copy error: {:?}", e))
+                opts.copy_multi(sources)
+                    .map_err(|e| format!("wl-clipboard-rs copy error: {:?}", e))
             });
-            
+
             if let Ok(mut lock) = child_arc.lock() {
                 *lock = Some(handle);
             }
@@ -310,7 +313,7 @@ impl ClipboardPortal for WlClipboardPortal {
             if let Ok(s) = String::from_utf8(output.stdout) {
                 for line in s.lines() {
                     let t = line.trim();
-                    if !t.is_empty() {
+                    if !t.is_empty() && t != "text/uri-list" {
                         types.push(t.to_string());
                     }
                 }

@@ -151,6 +151,7 @@ impl WindowsClipboardPortal {
                 }
 
                 // If not an echo, notify the task
+                let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
                 if tx.blocking_send(()).is_err() {
                     log::info!(
                         "[DEBUG WINDOWS] Clipboard portal owner_changed channel closed, terminating monitor."
@@ -228,14 +229,14 @@ impl ClipboardPortal for WindowsClipboardPortal {
                         } else if mime == "text/html" {
                             if let Some(html_fmt) = clipboard_win::register_format("HTML Format") {
                                 let encoded = encode_cf_html(&data);
-                                let _ = clipboard_win::raw::set_without_clear(
-                                    html_fmt.get(),
-                                    &encoded,
-                                );
+                                let _ =
+                                    clipboard_win::raw::set_without_clear(html_fmt.get(), &encoded);
                             }
                         } else if mime == "image/png" {
                             super::validate_image_dimensions(&data)?;
-                            if let Ok(img) = image::load_from_memory_with_format(&data, image::ImageFormat::Png) {
+                            if let Ok(img) =
+                                image::load_from_memory_with_format(&data, image::ImageFormat::Png)
+                            {
                                 let mut bmp_data = Vec::new();
                                 let mut cursor = std::io::Cursor::new(&mut bmp_data);
                                 if img.write_to(&mut cursor, image::ImageFormat::Bmp).is_ok() {
@@ -472,4 +473,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-
