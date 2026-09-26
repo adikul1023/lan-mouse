@@ -30,27 +30,8 @@ impl ClipboardPortal for AshpdClipboardPortal {
     ) -> Pin<
         Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
     > {
-        let clipboard = self.clipboard.clone();
-        Box::pin(async move {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
-            tokio::task::spawn(async move {
-                if let Ok(stream) = clipboard
-                    .receive_selection_owner_changed::<ashpd::desktop::input_capture::InputCapture>(
-                    )
-                    .await
-                {
-                    tokio::pin!(stream);
-                    while let Some(_) = stream.next().await {
-                        let _ = super::LOCAL_CLIPBOARD_CHANGED.send(());
-                        if tx.send(()).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            });
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
-                as Pin<Box<dyn Stream<Item = ()> + Send>>
-        })
+        let wl_portal = WlClipboardPortal::new();
+        Box::pin(async move { wl_portal.receive_selection_owner_changed().await })
     }
 
     fn receive_selection_transfer(
@@ -58,25 +39,8 @@ impl ClipboardPortal for AshpdClipboardPortal {
     ) -> Pin<
         Box<dyn std::future::Future<Output = Pin<Box<dyn Stream<Item = ()> + Send>>> + Send + '_>,
     > {
-        let clipboard = self.clipboard.clone();
-        Box::pin(async move {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
-            tokio::task::spawn(async move {
-                if let Ok(stream) = clipboard
-                    .receive_selection_transfer::<ashpd::desktop::input_capture::InputCapture>()
-                    .await
-                {
-                    tokio::pin!(stream);
-                    while let Some(_) = stream.next().await {
-                        if tx.send(()).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            });
-            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
-                as Pin<Box<dyn Stream<Item = ()> + Send>>
-        })
+        let wl_portal = WlClipboardPortal::new();
+        Box::pin(async move { wl_portal.receive_selection_transfer().await })
     }
 
     fn selection_write<'a>(
