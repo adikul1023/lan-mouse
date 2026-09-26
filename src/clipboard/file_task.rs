@@ -631,12 +631,17 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
     EXPECTING_FILE_ECHO.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         use clipboard_win::Setter;
-        if let Ok(_clip) = clipboard_win::Clipboard::new_attempts(5) {
-            let string_paths: Vec<String> = paths
-                .into_iter()
-                .filter_map(|p| p.to_str().map(|s| s.to_string()))
-                .collect();
-            let _ = clipboard_win::formats::FileList.write_clipboard(&string_paths);
+        let string_paths: Vec<String> = paths
+            .into_iter()
+            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .collect();
+
+        // Retry writing up to 5 times since clipboard can be temporarily locked
+        for _ in 0..5 {
+            if clipboard_win::formats::FileList.write_clipboard(&string_paths).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     })
     .await

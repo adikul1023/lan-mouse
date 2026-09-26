@@ -362,7 +362,7 @@ impl ClipboardPortal for WindowsClipboardPortal {
         &self,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
         Box::pin(async move {
-            let mut available = tokio::task::spawn_blocking(move || {
+            let available = tokio::task::spawn_blocking(move || {
                 let mut avail = Vec::new();
                 let _clip =
                     clipboard_win::Clipboard::new_attempts(10).map_err(|e| e.to_string())?;
