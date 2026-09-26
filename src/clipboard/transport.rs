@@ -185,26 +185,36 @@ pub async fn connect_clipboard(
         let received_offers = received_offers.clone();
         let received_requests = received_requests.clone();
         async move {
-            while let Ok(msg) = outgoing_rx.recv().await {
-                match &msg {
-                    ClipboardMessage::Request { id, .. } => {
-                        if !received_offers.lock().unwrap().contains(id) {
-                            continue;
+            loop {
+                match outgoing_rx.recv().await {
+                    Ok(msg) => {
+                        match &msg {
+                            ClipboardMessage::Request { id, .. } => {
+                                if !received_offers.lock().unwrap().contains(id) {
+                                    continue;
+                                }
+                            }
+                            ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
+                                if !received_requests.lock().unwrap().contains(id) {
+                                    continue;
+                                }
+                            }
+                            _ => {}
                         }
-                    }
-                    ClipboardMessage::Data { id, .. } | ClipboardMessage::Error { id, .. } => {
-                        if !received_requests.lock().unwrap().contains(id) {
-                            continue;
-                        }
-                    }
-                    _ => {}
-                }
 
-                if let Err(e) = write_message(&mut tx, &msg, session_version).await {
-                    log::warn!("Failed to write clipboard message to {addr}: {e}");
-                    match e {
-                        ProtocolError::FrameTooLarge(_) => continue,
-                        _ => break,
+                        if let Err(e) = write_message(&mut tx, &msg, session_version).await {
+                            log::warn!("Failed to write clipboard message to {addr}: {e}");
+                            match e {
+                                ProtocolError::FrameTooLarge(_) => continue,
+                                _ => break,
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("Clipboard transport lagged behind by {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
                     }
                 }
             }
@@ -341,36 +351,46 @@ pub async fn listen_clipboard(
                                     let received_offers = received_offers.clone();
                                     let received_requests = received_requests.clone();
                                     async move {
-                                        while let Ok(msg) = outgoing_rx.recv().await {
-                                            match &msg {
-                                                ClipboardMessage::Request { id, .. } => {
-                                                    if !received_offers.lock().unwrap().contains(id)
-                                                    {
-                                                        continue;
+                                        loop {
+                                            match outgoing_rx.recv().await {
+                                                Ok(msg) => {
+                                                    match &msg {
+                                                        ClipboardMessage::Request { id, .. } => {
+                                                            if !received_offers.lock().unwrap().contains(id)
+                                                            {
+                                                                continue;
+                                                            }
+                                                        }
+                                                        ClipboardMessage::Data { id, .. }
+                                                        | ClipboardMessage::Error { id, .. } => {
+                                                            if !received_requests
+                                                                .lock()
+                                                                .unwrap()
+                                                                .contains(id)
+                                                            {
+                                                                continue;
+                                                            }
+                                                        }
+                                                        _ => {}
                                                     }
-                                                }
-                                                ClipboardMessage::Data { id, .. }
-                                                | ClipboardMessage::Error { id, .. } => {
-                                                    if !received_requests
-                                                        .lock()
-                                                        .unwrap()
-                                                        .contains(id)
-                                                    {
-                                                        continue;
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
 
-                                            if let Err(e) =
-                                                write_message(&mut tx, &msg, session_version).await
-                                            {
-                                                log::warn!(
-                                                    "Failed to write clipboard message to {peer_addr}: {e}"
-                                                );
-                                                match e {
-                                                    ProtocolError::FrameTooLarge(_) => continue,
-                                                    _ => break,
+                                                    if let Err(e) =
+                                                        write_message(&mut tx, &msg, session_version).await
+                                                    {
+                                                        log::warn!(
+                                                            "Failed to write clipboard message to {peer_addr}: {e}"
+                                                        );
+                                                        match e {
+                                                            ProtocolError::FrameTooLarge(_) => continue,
+                                                            _ => break,
+                                                        }
+                                                    }
+                                                }
+                                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                                    log::warn!("Clipboard transport lagged behind by {} messages", n);
+                                                }
+                                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                                    break;
                                                 }
                                             }
                                         }

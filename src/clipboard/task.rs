@@ -329,6 +329,11 @@ impl ClipboardTask {
 
         let mime_types = self.generate_offer_mime_types().await;
 
+        if mime_types.is_empty() {
+            log::info!("[DEBUG TASK] No generic MIME types available, skipping Offer generation (likely file-only clipboard)");
+            return;
+        }
+
         log::info!(
             "[DEBUG TASK] Generating Offer (id={id}) with types: {:?}",
             mime_types

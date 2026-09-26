@@ -12,6 +12,7 @@ const MAX_FILENAME_LEN: usize = 255;
 struct ActiveOutgoingTransfer {
     id: u64,
     files: Vec<PathBuf>,
+    ack_tx: Option<tokio::sync::mpsc::Sender<(u64, u32, u64)>>,
 }
 
 struct ActiveIncomingTransfer {
@@ -120,6 +121,7 @@ async fn handle_local_clipboard_change(active_outgoing: &mut Option<ActiveOutgoi
     *active_outgoing = Some(ActiveOutgoingTransfer {
         id,
         files: valid_files,
+        ack_tx: None,
     });
 
     let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileOffer {
@@ -180,6 +182,9 @@ async fn handle_incoming_message(
                 .filter_map(|i| transfer.files.get(i as usize).map(|p| (i, p.clone())))
                 .collect();
 
+            let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(2);
+            transfer.ack_tx = Some(ack_tx);
+
             tokio::task::spawn_local(async move {
                 for (index, path) in files_to_send {
                     log::info!("Attempting to open file for transfer: {}", path.display());
@@ -201,6 +206,27 @@ async fn handle_incoming_message(
                                             data: buf[..n].to_vec(),
                                         };
                                         let _ = super::CLIPBOARD_OUTGOING.send(chunk);
+
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(10),
+                                            ack_rx.recv(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some((ack_id, ack_idx, ack_off))) => {
+                                                if ack_id != id || ack_idx != index || ack_off != offset {
+                                                    log::warn!("Mismatched FileChunkAck: expected {id}:{index}:{offset}, got {ack_id}:{ack_idx}:{ack_off}");
+                                                }
+                                            }
+                                            Ok(None) => return, // Cancelled
+                                            Err(_) => {
+                                                log::error!("Timeout waiting for FileChunkAck");
+                                                let _ = super::CLIPBOARD_OUTGOING
+                                                    .send(ClipboardMessage::Error { id, code: 504 });
+                                                return;
+                                            }
+                                        }
+
                                         offset += n as u64;
                                     }
                                     Err(e) => {
@@ -270,6 +296,11 @@ async fn handle_incoming_message(
                                 if let Some(hasher) = &mut transfer.current_file_hasher {
                                     hasher.update(&data);
                                 }
+                                let _ = super::CLIPBOARD_OUTGOING.send(ClipboardMessage::FileChunkAck {
+                                    id,
+                                    file_index,
+                                    offset,
+                                });
                             }
                         } else {
                             log::warn!(
@@ -364,6 +395,15 @@ async fn handle_incoming_message(
             if let Some(transfer) = active_outgoing {
                 if transfer.id == id {
                     *active_outgoing = None;
+                }
+            }
+        }
+        ClipboardMessage::FileChunkAck { id, file_index, offset } => {
+            if let Some(transfer) = active_outgoing {
+                if transfer.id == id {
+                    if let Some(tx) = &transfer.ack_tx {
+                        let _ = tx.try_send((id, file_index, offset));
+                    }
                 }
             }
         }

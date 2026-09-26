@@ -61,6 +61,11 @@ pub enum ClipboardMessage {
         size: u64,
         sha256: [u8; 32],
     },
+    FileChunkAck {
+        id: u64,
+        file_index: u32,
+        offset: u64,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -84,6 +89,7 @@ impl ClipboardMessage {
     pub const MSG_FILE_REQUEST: u8 = 12;
     pub const MSG_FILE_CHUNK: u8 = 13;
     pub const MSG_FILE_COMPLETE: u8 = 14;
+    pub const MSG_FILE_CHUNK_ACK: u8 = 15;
 
     pub fn encode(&self, out: &mut impl Write, version: u16) -> io::Result<()> {
         match self {
@@ -220,6 +226,18 @@ impl ClipboardMessage {
                     out.write_all(&file_index.to_be_bytes())?;
                     out.write_all(&size.to_be_bytes())?;
                     out.write_all(sha256)?;
+                }
+            }
+            ClipboardMessage::FileChunkAck {
+                id,
+                file_index,
+                offset,
+            } => {
+                if version >= 4 {
+                    out.write_all(&[Self::MSG_FILE_CHUNK_ACK])?;
+                    out.write_all(&id.to_be_bytes())?;
+                    out.write_all(&file_index.to_be_bytes())?;
+                    out.write_all(&offset.to_be_bytes())?;
                 }
             }
         }
@@ -455,6 +473,19 @@ impl ClipboardMessage {
                     file_index: u32::from_be_bytes(idx_b),
                     size: u64::from_be_bytes(size_b),
                     sha256,
+                })
+            }
+            Self::MSG_FILE_CHUNK_ACK => {
+                let mut id_b = [0u8; 8];
+                src.read_exact(&mut id_b)?;
+                let mut idx_b = [0u8; 4];
+                src.read_exact(&mut idx_b)?;
+                let mut off_b = [0u8; 8];
+                src.read_exact(&mut off_b)?;
+                Ok(ClipboardMessage::FileChunkAck {
+                    id: u64::from_be_bytes(id_b),
+                    file_index: u32::from_be_bytes(idx_b),
+                    offset: u64::from_be_bytes(off_b),
                 })
             }
             t => Err(ProtocolError::InvalidMessageType(t)),

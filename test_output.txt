@@ -1,0 +1,125 @@
+   Compiling lan-mouse v0.11.0 (D:\My projects\lan-mouse)
+warning: unused variable: `items`
+   --> src\clipboard\os_windows.rs:200:38
+    |
+200 |     fn selection_write<'a>(&'a self, items: Vec<super::task::ClipboardItem>) -> Pin<Box<dyn std::future::Future<Output = Result<(),...
+    |                                      ^^^^^ help: if this is intentional, prefix it with an underscore: `_items`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `StreamExt`
+ --> src\clipboard\tests.rs:6:23
+  |
+6 | use futures::{Stream, StreamExt};
+  |                       ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `owner_tx`
+   --> src\clipboard\tests.rs:264:10
+    |
+264 |     let (owner_tx, owner_rx) = mpsc::channel(1);
+    |          ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_owner_tx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `transfer_tx`
+   --> src\clipboard\tests.rs:265:10
+    |
+265 |     let (transfer_tx, transfer_rx) = mpsc::channel(1);
+    |          ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_transfer_tx`
+
+warning: unused variable: `session_tx`
+   --> src\clipboard\tests.rs:330:10
+    |
+330 |     let (session_tx, session_rx) = watch::channel(Some(()));
+    |          ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_session_tx`
+
+warning: variable does not need to be mutable
+   --> src\clipboard\tests.rs:469:9
+    |
+469 |     let mut valid_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0DIHDR\x00\x00\x00\x64\x00\x00\x00\x64\x08\x06\x00\x00\x00".to_vec();
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `items`
+   --> src\clipboard\os_windows.rs:200:38
+    |
+200 |     fn selection_write<'a>(&'a self, items: Vec<super::task::ClipboardItem>) -> Pin<Box<dyn std::future::Future<Output = Result<(),...
+    |                                      ^^^^^ help: if this is intentional, prefix it with an underscore: `_items`
+
+warning: function `encode_cf_html` is never used
+ --> src\clipboard\os_windows.rs:9:4
+  |
+9 | fn encode_cf_html(fragment: &[u8]) -> Vec<u8> {
+  |    ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `prepare_write` and `record_write` are never used
+  --> src\clipboard\os_windows.rs:81:8
+   |
+73 | impl EchoSuppressor {
+   | ------------------- methods in this implementation
+...
+81 |     fn prepare_write(&mut self) {
+   |        ^^^^^^^^^^^^^
+...
+85 |     fn record_write(&mut self) {
+   |        ^^^^^^^^^^^^
+
+warning: field `suppressor` is never read
+   --> src\clipboard\os_windows.rs:111:5
+    |
+109 | pub struct WindowsClipboardPortal {
+    |            ---------------------- field in this struct
+110 |     owner_changed_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<()>>>>,
+111 |     suppressor: Arc<Mutex<EchoSuppressor>>,
+    |     ^^^^^^^^^^
+
+warning: methods `prepare_write` and `record_write` are never used
+  --> src\clipboard\os_windows.rs:81:8
+   |
+73 | impl EchoSuppressor {
+   | ------------------- methods in this implementation
+...
+81 |     fn prepare_write(&mut self) {
+   |        ^^^^^^^^^^^^^
+...
+85 |     fn record_write(&mut self) {
+   |        ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `lan-mouse` (lib) generated 4 warnings (run `cargo fix --lib -p lan-mouse` to apply 1 suggestion)
+warning: function `start_service` is never used
+   --> src\main.rs:121:4
+    |
+121 | fn start_service() -> Result<Child, io::Error> {
+    |    ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `lan-mouse` (bin "lan-mouse" test) generated 1 warning
+warning: `lan-mouse` (lib test) generated 8 warnings (1 duplicate) (run `cargo fix --lib -p lan-mouse --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.85s
+     Running unittests src\lib.rs (target\debug\deps\lan_mouse-33e4c3f63175db65.exe)
+
+running 13 tests
+test clipboard::os_windows::tests::test_cf_html_decode_malformed ... ok
+test clipboard::os_windows::tests::test_cf_html_roundtrip_ascii ... ok
+test clipboard::os_windows::tests::test_cf_html_roundtrip_empty ... ok
+test clipboard::os_windows::tests::test_cf_html_roundtrip_large ... ok
+test clipboard::os_windows::tests::test_cf_html_roundtrip_multiline ... ok
+test clipboard::os_windows::tests::test_cf_html_roundtrip_unicode ... ok
+test clipboard::tests::test_clipboard_state_machine ... FAILED
+test clipboard::tests::test_eager_fetch ... ok
+error: test failed, to rerun pass `-p lan-mouse --lib`
+
+Caused by:
+  process didn't exit successfully: `D:\My projects\lan-mouse\target\debug\deps\lan_mouse-33e4c3f63175db65.exe --test-threads=1` (exit code: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+test clipboard::tests::test_failure_isolation_and_stress ... 
