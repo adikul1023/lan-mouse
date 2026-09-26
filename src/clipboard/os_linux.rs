@@ -81,29 +81,36 @@ impl ClipboardPortal for AshpdClipboardPortal {
 
     fn selection_write<'a>(
         &'a self,
-        _items: Vec<super::task::ClipboardItem>,
+        items: Vec<super::task::ClipboardItem>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async move { Ok(()) })
+        // Delegate to wl-clipboard for actual writing
+        let wl_portal = WlClipboardPortal::new();
+        Box::pin(async move { wl_portal.selection_write(items).await })
     }
 
     fn selection_read<'a>(
         &'a self,
-        _mime: &'a str,
+        mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        Box::pin(async move { Ok(Vec::new()) })
+        let wl_portal = WlClipboardPortal::new();
+        let mime_str = mime.to_string();
+        Box::pin(async move { wl_portal.selection_read(&mime_str).await })
     }
 
     fn set_selection<'a>(
         &'a self,
-        _mime: &'a str,
+        mime: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async move { Ok(()) })
+        let wl_portal = WlClipboardPortal::new();
+        let mime_str = mime.to_string();
+        Box::pin(async move { wl_portal.set_selection(&mime_str).await })
     }
 
     fn get_available_mime_types(
         &self,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send + '_>> {
-        Box::pin(async move { Ok(vec!["text/plain".to_string()]) })
+        let wl_portal = WlClipboardPortal::new();
+        Box::pin(async move { wl_portal.get_available_mime_types().await })
     }
 
     fn eager_fetch(&self) -> bool {
@@ -168,9 +175,7 @@ impl ClipboardPortal for WlClipboardPortal {
                             if crate::clipboard::file_task::EXPECTING_FILE_ECHO
                                 .swap(false, std::sync::atomic::Ordering::SeqCst)
                             {
-                                log::info!(
-                                    "owner_changed ignored as file transfer echo"
-                                );
+                                log::info!("owner_changed ignored as file transfer echo");
                                 continue;
                             }
                             log::info!("owner_changed accepted as external change");
@@ -245,8 +250,10 @@ impl ClipboardPortal for WlClipboardPortal {
                     return Ok(());
                 }
 
-                opts.copy_multi(sources)
-                    .map_err(|e| format!("wl-clipboard-rs copy error: {:?}", e))
+                log::info!("Calling copy_multi for text/image...");
+                let result = opts.copy_multi(sources);
+                log::info!("copy_multi for text/image returned with: {:?}", result);
+                result.map_err(|e| format!("wl-clipboard-rs copy error: {:?}", e))
             });
 
             if let Ok(mut lock) = child_arc.lock() {
